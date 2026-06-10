@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Fish-Shooter RTP Simulator — pure numbers</title>
+<style>
+  :root { --bg:#0b1020; --panel:#121a30; --line:#23304f; --txt:#cdd7ee; --dim:#7e8db0;
+          --green:#4ade80; --red:#f87171; --gold:#fbbf24; --blue:#60a5fa; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font:13px/1.45 "JetBrains Mono","Fira Code",Consolas,monospace; padding:14px; }
+  h1 { font-size:15px; margin:0 0 4px; color:var(--gold); }
+  .sub { color:var(--dim); margin-bottom:12px; font-size:12px; }
+  .grid { display:grid; grid-template-columns: 330px 1fr 360px; gap:12px; align-items:start; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin-bottom:12px; }
+  .panel h2 { font-size:11px; letter-spacing:1px; text-transform:uppercase; color:var(--blue); margin:0 0 8px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th { text-align:left; color:var(--dim); font-weight:normal; border-bottom:1px solid var(--line); padding:2px 4px; }
+  td { padding:2px 4px; border-bottom:1px solid #1a2440; }
+  tr.aim { background:#1d2a4d; cursor:pointer; }
+  tbody tr { cursor:pointer; } tbody tr:hover { background:#182343; }
+  .num { text-align:right; font-variant-numeric: tabular-nums; }
+  .big { font-size:22px; font-weight:bold; }
+  .green{color:var(--green)} .red{color:var(--red)} .gold{color:var(--gold)} .dim{color:var(--dim)} .blue{color:var(--blue)}
+  button { background:#1c2a4f; color:var(--txt); border:1px solid var(--line); border-radius:6px;
+           padding:6px 10px; font:inherit; cursor:pointer; margin:2px 2px 2px 0; }
+  button:hover { background:#27407a; } button.on { background:#2c4d2c; border-color:var(--green); }
+  input[type=range]{ width:130px; vertical-align:middle; }
+  .kv { display:flex; justify-content:space-between; padding:1px 0; }
+  .logline { padding:2px 0; border-bottom:1px dashed #1a2440; font-size:12px; }
+  .bar { height:8px; background:#1a2440; border-radius:4px; overflow:hidden; margin:2px 0 8px; }
+  .bar > div { height:100%; }
+  canvas { width:100%; height:110px; background:#0d142a; border-radius:6px; }
+  .formula { background:#0d142a; border-radius:6px; padding:6px 8px; margin-top:6px; color:var(--gold); font-size:12px; }
+</style>
+</head>
+<body>
+<h1>FISH-SHOOTER REPLICATED IN NUMBERS — every RTP mechanic, no graphics</h1>
+<div class="sub">Play the canvas below (aim with mouse, click/hold to fire) or use the turbo buttons. Either way it's the SAME money engine — aiming changes <b>volatility, never RTP</b>.</div>
+
+<div class="panel" style="margin-bottom:12px">
+  <h2>Mini gameplay — same math, now visible <span class="dim">(fish move on the real Bezier paths; every contact = one server roll)</span></h2>
+  <canvas id="game" width="1280" height="380" style="width:100%;height:auto;display:block;background:#071021;border-radius:6px;cursor:crosshair"></canvas>
+  <div class="dim" style="font-size:11px;margin-top:4px">
+    bullets bounce off walls (bounce-until-hit, like the original) but expire after 8 bounces → a real WHIFF you can watch ·
+    HP bars are <b>theater</b> — they drain on failed rolls but the kill was always a single probability ·
+    fish size = multiplier
+  </div>
+</div>
+
+<div class="grid">
+  <!-- LEFT: controls + screen -->
+  <div>
+    <div class="panel">
+      <h2>Cannon</h2>
+      <div class="kv"><span>Bet (50–600, step 50)</span><span><button id="betDown">−</button> <b id="betVal" class="gold">100</b> <button id="betUp">+</button></span></div>
+      <div class="kv"><span>Cannon level <span class="dim">(cosmetic!)</span></span><b id="cannonLvl"></b></div>
+      <div style="margin-top:6px">
+        <button id="fire1">FIRE ×1</button>
+        <button id="fire100">×100</button>
+        <button id="fire10k">×10,000</button>
+        <button id="auto">AUTO</button>
+      </div>
+      <div style="margin-top:8px" class="kv"><span>Miss tax (bullet lifetime)</span>
+        <span><input type="range" id="miss" min="0" max="20" value="0"> <b id="missVal">0%</b></span></div>
+      <div class="formula" id="missFormula"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Screen — live fish <span class="dim">(the "school")</span></h2>
+      <div class="kv"><span>Stage</span><b id="stage" class="gold"></b></div>
+      <div class="kv"><span>Σ(M) on screen / director band</span><b id="band"></b></div>
+      <div class="bar"><div id="bandBar" style="background:var(--blue);width:0%"></div></div>
+      <table>
+        <thead><tr><th>fish</th><th class="num">M (pays)</th><th class="num">p(kill)</th><th class="num">EV/shot</th></tr></thead>
+        <tbody id="fishTable"></tbody>
+      </table>
+      <div class="formula">every row: p × M × bet = <b>0.96 × bet</b> — aiming picks variance, not edge</div>
+    </div>
+  </div>
+
+  <!-- MIDDLE: RTP accounting -->
+  <div>
+    <div class="panel">
+      <h2>RTP — the only numbers that matter</h2>
+      <div style="display:flex; gap:24px; align-items:baseline">
+        <div><div class="dim">lifetime RTP</div><div class="big" id="rtp">—</div></div>
+        <div><div class="dim">expected</div><div class="big dim" id="rtpExp">0.9600</div></div>
+        <div><div class="dim">shots</div><div class="big blue" id="shots">0</div></div>
+      </div>
+      <canvas id="chart" width="640" height="110"></canvas>
+      <div class="dim" style="font-size:11px">cumulative RTP per 25 shots — watch it converge to the dashed target line</div>
+    </div>
+
+    <div class="panel">
+      <h2>Where the money went (RTP buckets)</h2>
+      <table>
+        <thead><tr><th>bucket</th><th class="num">paid</th><th class="num">share of wagered</th></tr></thead>
+        <tbody id="buckets"></tbody>
+      </table>
+      <div class="formula">base + chain + hammer + boss = total RTP. Spawn mix moves money <i>between buckets</i>, never changes the total.</div>
+    </div>
+
+    <div class="panel">
+      <h2>Money</h2>
+      <div class="kv"><span>Total wagered</span><b id="wagered" class="num">0</b></div>
+      <div class="kv"><span>Total paid</span><b id="paid" class="num">0</b></div>
+      <div class="kv"><span>House kept</span><b id="house" class="num gold">0</b></div>
+      <div class="kv"><span>Kills / whiffs</span><b id="kills" class="num">0 / 0</b></div>
+      <div class="kv"><span>Biggest single win</span><b id="bigWin" class="num green">0</b></div>
+      <div class="kv"><span>Longest drought (shots w/o win)</span><b id="drought" class="num red">0</b></div>
+    </div>
+  </div>
+
+  <!-- RIGHT: shot log -->
+  <div>
+    <div class="panel">
+      <h2>Shot log — the server's view</h2>
+      <div id="log"></div>
+    </div>
+    <div class="panel">
+      <h2>How each feature is priced</h2>
+      <div class="logline">NORMAL FISH → p = 0.96 / M</div>
+      <div class="logline">CHAIN (gold clown) → prize = Σ(M of self + all clownfish) snapshot at roll; p = 0.96 / ΣM</div>
+      <div class="logline">HAMMER CRAB → prize = 3 × Σ(screen M) snapshot; p = 0.96 / prizeM. The 3 wipes are payout animation. Bosses immune.</div>
+      <div class="logline">BOSS dragon → multiplier 1–5x rolled FOR REAL (E=1.88); p = 0.96 / (200 × 1.88)</div>
+      <div class="logline dim">min-prize floor 10× & feature fish only spawn when screen ≥ 60 — the density guards</div>
+    </div>
+  </div>
+</div>
+
+<script src="sim-core.js"></script>
+<script>
+const SC = window.SimCore;
+const sim = new SC.Sim();
+let aimUid = null, autoTimer = null;
+const $ = id => document.getElementById(id);
+const fmt = n => n.toLocaleString('en-US');
+
+function fire(n) {
+  for (let i = 0; i < n; i++) {
+    if (aimUid != null && !sim.fish.some(f => f.uid === aimUid)) aimUid = null;
+    sim.shoot(aimUid);
+  }
+  render();
+}
+
+function render() {
+  const s = sim.stats;
+  $('betVal').textContent = sim.bet;
+  $('cannonLvl').textContent = sim.bet < 300 ? 'Lv1' : sim.bet < 500 ? 'Lv2' : 'Lv3';
+  $('stage').textContent = sim.stage().name + '  (' + sim.stageShots + '/' + sim.stage().shots + ' shots)';
+  const sv = sim.screenValue();
+  $('band').textContent = sv.toFixed(0) + '  /  [' + SC.BAND_LOW + '–' + SC.BAND_HIGH + ']';
+  $('bandBar').style.width = Math.min(100, sv / SC.BAND_HIGH * 100) + '%';
+
+  $('fishTable').innerHTML = sim.fish.map(f => {
+    const p = sim.pFor(f);
+    const label = f.sp.kind === 'chain' ? f.sp.id + ' ⚡' : f.sp.kind === 'crab' ? f.sp.id + ' 🔨' : f.sp.kind === 'boss' ? f.sp.id + ' 👑' : f.sp.id;
+    const pays = f.sp.kind === 'chain' ? 'Σ' + sim.chainSnapshotM(f) : f.sp.kind === 'crab' ? 'Σ' + sim.hammerSnapshotM() : f.sp.kind === 'boss' ? '200×roll' : f.sp.M;
+    return `<tr data-uid="${f.uid}" class="${aimUid === f.uid ? 'aim' : ''}">
+      <td>${label}</td><td class="num">${pays}</td>
+      <td class="num">${(p * 100).toFixed(2)}%</td>
+      <td class="num dim">0.96·bet</td></tr>`;
+  }).join('');
+  document.querySelectorAll('#fishTable tr').forEach(tr =>
+    tr.onclick = () => { const u = +tr.dataset.uid; aimUid = aimUid === u ? null : u; render(); });
+
+  const rtp = sim.rtp();
+  $('rtp').textContent = s.wagered ? rtp.toFixed(4) : '—';
+  $('rtp').className = 'big ' + (rtp >= sim.expectedRtp() ? 'green' : 'red');
+  $('rtpExp').textContent = sim.expectedRtp().toFixed(4);
+  $('shots').textContent = fmt(s.shots);
+  $('wagered').textContent = fmt(s.wagered);
+  $('paid').textContent = fmt(s.paid);
+  $('house').textContent = fmt(s.wagered - s.paid);
+  $('kills').textContent = fmt(s.kills) + ' / ' + fmt(s.misses);
+  $('bigWin').textContent = fmt(s.biggestWin);
+  $('drought').textContent = fmt(s.maxDrought);
+  $('missFormula').textContent = 'delivered RTP = 0.96 × (1 − ' + (sim.missProb).toFixed(2) + ') = ' + sim.expectedRtp().toFixed(4);
+
+  const B = s.buckets, w = s.wagered || 1;
+  $('buckets').innerHTML = [
+    ['base kills', B.base.paid], ['chain ⚡', B.chain.paid],
+    ['hammer 🔨', B.hammer.paid], ['boss 👑', B.boss.paid],
+  ].map(([n, p]) => `<tr><td>${n}</td><td class="num">${fmt(p)}</td><td class="num">${(p / w * 100).toFixed(2)}%</td></tr>`).join('')
+   + `<tr><td><b>TOTAL</b></td><td class="num"><b>${fmt(s.paid)}</b></td><td class="num"><b>${(s.paid / w * 100).toFixed(2)}%</b></td></tr>`;
+
+  $('log').innerHTML = [...sim.log].reverse().map(e => {
+    if (e.type === 'stage') return `<div class="logline gold">— stage → ${e.stage} (screen cleared, spawn table swapped) —</div>`;
+    if (e.result && e.result.startsWith('WHIFF')) return `<div class="logline red">#${e.shot} ${e.result}</div>`;
+    const k = e.result === 'KILL';
+    return `<div class="logline">#${e.shot} → ${e.target || '?'} p=${(e.p * 100).toFixed(2)}% roll=${e.roll?.toFixed(4)} ` +
+      (k ? `<span class="green">KILL +${fmt(e.payout)}</span> <span class="dim">${e.detail || ''}</span>`
+         : `<span class="dim">${e.result}</span>`) + `</div>`;
+  }).join('');
+
+  drawChart();
+}
+
+function drawChart() {
+  const c = $('chart'), ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, c.width, c.height);
+  const h = sim.stats.rtpHistory; if (!h.length) return;
+  const yOf = v => c.height - ((v - 0.5) / 0.7) * c.height; // window 0.5–1.2
+  ctx.strokeStyle = '#3a4a72'; ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.moveTo(0, yOf(sim.expectedRtp())); ctx.lineTo(c.width, yOf(sim.expectedRtp())); ctx.stroke();
+  ctx.setLineDash([]); ctx.strokeStyle = '#4ade80'; ctx.beginPath();
+  h.forEach((v, i) => { const x = i / Math.max(h.length - 1, 1) * c.width, y = Math.max(2, Math.min(c.height - 2, yOf(v))); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  ctx.stroke();
+}
+
+$('betUp').onclick = () => { sim.bet = sim.bet >= 600 ? 50 : sim.bet + 50; render(); };
+$('betDown').onclick = () => { sim.bet = sim.bet <= 50 ? 600 : sim.bet - 50; render(); };
+$('fire1').onclick = () => fire(1);
+$('fire100').onclick = () => fire(100);
+$('fire10k').onclick = () => fire(10000);
+$('auto').onclick = function () {
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; this.classList.remove('on'); }
+  else { autoTimer = setInterval(() => fire(3), 120); this.classList.add('on'); }
+};
+$('miss').oninput = function () { sim.missProb = +this.value / 100; $('missVal').textContent = this.value + '%'; render(); };
+
+render();
+
+// ============================================================
+// VISUAL MINI-GAME — pure view layer over the same Sim.
+// Fish positions/paths are cosmetic; money happens only in
+// sim.wagerShot() / sim.resolveContact() / sim.resolveMiss().
+// ============================================================
+const gc = $('game'), g = gc.getContext('2d');
+const GW = gc.width, GH = gc.height;
+const CANNON = { x: GW / 2, y: GH - 14, angle: -Math.PI / 2 };
+const view = new Map();   // uid -> {x,y,S,C,E,t,dur,theater}
+let bullets = [], pops = [], nets = [], dying = [], flash = 0;
+let firing = false, lastFire = 0;
+
+function borderPoint() {
+  const side = Math.floor(Math.random() * 3); // top/left/right (bottom is the cannon's)
+  if (side === 0) return { x: 60 + Math.random() * (GW - 120), y: -30 };
+  if (side === 1) return { x: -30, y: 30 + Math.random() * (GH * 0.7) };
+  return { x: GW + 30, y: 30 + Math.random() * (GH * 0.7) };
+}
+
+// quadratic Bezier path exactly like mechanics.md: control = mid + perp * curveDist
+function newPath(from) {
+  const S = from || borderPoint();
+  let E = borderPoint();
+  if (Math.abs(E.x - S.x) + Math.abs(E.y - S.y) < 300) E = { x: GW - S.x, y: Math.random() * GH * 0.7 };
+  const mid = { x: (S.x + E.x) / 2, y: (S.y + E.y) / 2 };
+  const dx = E.x - S.x, dy = E.y - S.y, len = Math.hypot(dx, dy) || 1;
+  const curve = (Math.random() < 0.5 ? -1 : 1) * 150;
+  const C = { x: mid.x + (-dy / len) * curve, y: mid.y + (dx / len) * curve };
+  return { S, C, E, t: 0, dur: 9000 + Math.random() * 7000 };
+}
+
+function bez(P, t) {
+  const u = 1 - t;
+  return { x: u * u * P.S.x + 2 * u * t * P.C.x + t * t * P.E.x,
+           y: u * u * P.S.y + 2 * u * t * P.C.y + t * t * P.E.y };
+}
+
+function fishRadius(f) {
+  const m = f.sp.kind === 'boss' ? 80 : f.sp.kind === 'crab' ? 20 : f.sp.M;
+  return 11 + Math.sqrt(m) * 2.4;
+}
+function fishColor(f) {
+  if (f.sp.kind === 'boss') return '#fbbf24';
+  if (f.sp.kind === 'chain') return '#f59e0b';
+  if (f.sp.kind === 'crab') return '#fb7185';
+  const hues = { 2: 200, 3: 180, 5: 160, 8: 140, 12: 100, 18: 60, 25: 30, 40: 0 };
+  return `hsl(${hues[f.sp.M] ?? 220} 70% 60%)`;
+}
+
+function syncView() {
+  const live = new Set(sim.fish.map(f => f.uid));
+  for (const [uid, v] of view) if (!live.has(uid)) {
+    dying.push({ ...v, alpha: 1, f: v.f });
+    view.delete(uid);
+  }
+  for (const f of sim.fish) if (!view.has(f.uid)) {
+    const p = newPath();
+    view.set(f.uid, { ...p, f, theater: 1 });
+  }
+}
+
+function fireBullet() {
+  sim.wagerShot();                       // debit happens at fire time, like a real server round
+  bullets.push({ x: CANNON.x, y: CANNON.y - 18,
+    vx: Math.cos(CANNON.angle) * 10, vy: Math.sin(CANNON.angle) * 10,
+    bet: sim.bet, bounces: 0 });
+}
+
+gc.addEventListener('pointermove', e => {
+  const r = gc.getBoundingClientRect();
+  const x = (e.clientX - r.left) * GW / r.width, y = (e.clientY - r.top) * GH / r.height;
+  CANNON.angle = Math.atan2(y - CANNON.y, x - CANNON.x);
+});
+gc.addEventListener('pointerdown', () => { firing = true; });
+window.addEventListener('pointerup', () => { firing = false; });
+
+function tick(now) {
+  syncView();
+
+  // fish along their Bezier paths
+  for (const v of view.values()) {
+    v.t += 16 / v.dur;
+    if (v.t >= 1) Object.assign(v, newPath({ x: v.x, y: v.y }));
+    const p = bez(v, Math.min(v.t, 1));
+    v.x = p.x; v.y = p.y;
+  }
+
+  // hold-to-fire
+  if (firing && now - lastFire > 170) { lastFire = now; fireBullet(); }
+
+  // bullets: move, bounce, contact
+  bullets = bullets.filter(b => {
+    b.x += b.vx; b.y += b.vy;
+    if (b.x < 4 || b.x > GW - 4) { b.vx *= -1; b.bounces++; }
+    if (b.y < 4 || b.y > GH - 4) { b.vy *= -1; b.bounces++; }
+    if (b.bounces > 8) { sim.resolveMiss(); pops.push({ x: b.x, y: b.y, txt: 'WHIFF', col: '#f87171', a: 1 }); return false; }
+    for (const [uid, v] of view) {
+      if (Math.hypot(b.x - v.x, b.y - v.y) < fishRadius(v.f) + 5) {
+        nets.push({ x: b.x, y: b.y, r: 6, a: 1 });
+        const e = sim.resolveContact(uid, b.bet);
+        if (e.result === 'KILL') {
+          pops.push({ x: v.x, y: v.y, txt: '+' + fmt(e.payout), col: '#4ade80', a: 1.4 });
+          if (e.detail && e.detail.startsWith('HAMMER')) flash = 1;
+          if (e.detail && e.detail.startsWith('BOSS')) flash = 1;
+        } else {
+          v.theater = Math.max(0.06, v.theater - (0.15 + Math.random() * 0.3)); // HP THEATER only
+          pops.push({ x: v.x, y: v.y - fishRadius(v.f) - 6, txt: 'p=' + (e.p * 100).toFixed(1) + '% ✗', col: '#7e8db0', a: 0.9 });
+        }
+        return false;
+      }
+    }
+    return true;
+  });
+
+  draw();
+  requestAnimationFrame(tick);
+}
+
+function draw() {
+  g.clearRect(0, 0, GW, GH);
+  if (flash > 0) { g.fillStyle = `rgba(251,191,36,${flash * 0.25})`; g.fillRect(0, 0, GW, GH); flash -= 0.05; }
+
+  // dying fish fade
+  dying = dying.filter(d => {
+    d.alpha -= 0.06; if (d.alpha <= 0) return false;
+    g.globalAlpha = d.alpha;
+    drawFish(d, d.f); g.globalAlpha = 1; return true;
+  });
+
+  for (const v of view.values()) drawFish(v, v.f);
+
+  // nets (the 0.7s visual from the original)
+  nets = nets.filter(n => { n.r += 3.5; n.a -= 0.05; if (n.a <= 0) return false;
+    g.strokeStyle = `rgba(96,165,250,${n.a})`; g.lineWidth = 2;
+    g.beginPath(); g.arc(n.x, n.y, n.r, 0, 7); g.stroke(); return true; });
+
+  // bullets
+  g.fillStyle = '#fbbf24';
+  for (const b of bullets) { g.beginPath(); g.arc(b.x, b.y, 4, 0, 7); g.fill(); }
+
+  // payout popups
+  pops = pops.filter(p => { p.y -= 0.7; p.a -= 0.018; if (p.a <= 0) return false;
+    g.globalAlpha = Math.min(1, p.a); g.fillStyle = p.col;
+    g.font = p.txt.startsWith('+') ? 'bold 16px monospace' : '11px monospace';
+    g.textAlign = 'center'; g.fillText(p.txt, p.x, p.y); g.globalAlpha = 1; return true; });
+
+  // cannon
+  g.save(); g.translate(CANNON.x, CANNON.y); g.rotate(CANNON.angle);
+  g.fillStyle = '#60a5fa'; g.fillRect(0, -5, 34, 10);
+  g.restore();
+  g.fillStyle = '#1c2a4f'; g.beginPath(); g.arc(CANNON.x, CANNON.y, 14, 0, 7); g.fill();
+  g.strokeStyle = '#60a5fa'; g.stroke();
+  g.fillStyle = '#cdd7ee'; g.font = '11px monospace'; g.textAlign = 'center';
+  g.fillText('bet ' + sim.bet, CANNON.x, CANNON.y - 22);
+
+  // stage tag
+  g.fillStyle = '#fbbf24'; g.font = 'bold 13px monospace'; g.textAlign = 'left';
+  g.fillText(sim.stage().name + ' stage', 10, 18);
+}
+
+function drawFish(v, f) {
+  const r = fishRadius(f);
+  g.fillStyle = fishColor(f);
+  g.beginPath(); g.ellipse(v.x, v.y, r * 1.25, r * 0.85, 0, 0, 7); g.fill();
+  // tail
+  g.beginPath(); g.moveTo(v.x - r * 1.25, v.y); g.lineTo(v.x - r * 1.8, v.y - r * 0.5); g.lineTo(v.x - r * 1.8, v.y + r * 0.5); g.fill();
+  // label: the multiplier IS the fish
+  g.fillStyle = '#071021'; g.font = `bold ${Math.max(11, r * 0.55)}px monospace`; g.textAlign = 'center';
+  const tag = f.sp.kind === 'chain' ? '⚡' + f.sp.M : f.sp.kind === 'crab' ? '🔨' : f.sp.kind === 'boss' ? '👑200' : f.sp.M + 'x';
+  g.fillText(tag, v.x, v.y + 4);
+  // HP theater bar
+  if (v.theater !== undefined && f.sp.kind !== 'crab') {
+    g.fillStyle = '#1a2440'; g.fillRect(v.x - r, v.y - r - 9, r * 2, 4);
+    g.fillStyle = v.theater > 0.4 ? '#4ade80' : '#f87171';
+    g.fillRect(v.x - r, v.y - r - 9, r * 2 * v.theater, 4);
+  }
+}
+
+// panels refresh on a timer so the canvas loop stays cheap
+setInterval(render, 350);
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
