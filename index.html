@@ -41,8 +41,16 @@
 <div class="panel" style="margin-bottom:12px">
   <h2>Mini gameplay — same math, now visible <span class="dim">(fish move on the real Bezier paths; every contact = one server roll)</span></h2>
   <canvas id="game" width="1280" height="380" style="width:100%;height:auto;display:block;background:#071021;border-radius:6px;cursor:crosshair"></canvas>
+  <div style="margin-top:6px">
+    <span class="dim" style="font-size:11px">TRY THE FEATURES → </span>
+    <button id="spawnChain">⚡ spawn chain school</button>
+    <button id="spawnCrab">🔨 spawn hammer crab</button>
+    <button id="spawnBoss">👑 spawn boss</button>
+    <span class="dim" style="font-size:11px">(spawning anything never changes RTP — every fish self-prices)</span>
+  </div>
   <div class="dim" style="font-size:11px;margin-top:4px">
-    bullets bounce off walls (bounce-until-hit, like the original) but expire after 8 bounces → a real WHIFF you can watch ·
+    bullets <b>bounce until they hit</b> (the original's design: P(contact)=1 → delivered RTP = target);
+    a stuck bullet is VOIDED with a refund, never eaten ·
     HP bars are <b>theater</b> — they drain on failed rolls but the kill was always a single probability ·
     fish size = multiplier
   </div>
@@ -106,7 +114,7 @@
       <div class="kv"><span>Total wagered</span><b id="wagered" class="num">0</b></div>
       <div class="kv"><span>Total paid</span><b id="paid" class="num">0</b></div>
       <div class="kv"><span>House kept</span><b id="house" class="num gold">0</b></div>
-      <div class="kv"><span>Kills / whiffs</span><b id="kills" class="num">0 / 0</b></div>
+      <div class="kv"><span>Kills / whiffs / refunds</span><b id="kills" class="num">0 / 0 / 0</b></div>
       <div class="kv"><span>Biggest single win</span><b id="bigWin" class="num green">0</b></div>
       <div class="kv"><span>Longest drought (shots w/o win)</span><b id="drought" class="num red">0</b></div>
     </div>
@@ -174,7 +182,7 @@ function render() {
   $('wagered').textContent = fmt(s.wagered);
   $('paid').textContent = fmt(s.paid);
   $('house').textContent = fmt(s.wagered - s.paid);
-  $('kills').textContent = fmt(s.kills) + ' / ' + fmt(s.misses);
+  $('kills').textContent = fmt(s.kills) + ' / ' + fmt(s.misses) + ' / ' + fmt(s.refunds || 0);
   $('bigWin').textContent = fmt(s.biggestWin);
   $('drought').textContent = fmt(s.maxDrought);
   $('missFormula').textContent = 'delivered RTP = 0.96 × (1 − ' + (sim.missProb).toFixed(2) + ') = ' + sim.expectedRtp().toFixed(4);
@@ -220,6 +228,9 @@ $('auto').onclick = function () {
   else { autoTimer = setInterval(() => fire(3), 120); this.classList.add('on'); }
 };
 $('miss').oninput = function () { sim.missProb = +this.value / 100; $('missVal').textContent = this.value + '%'; render(); };
+$('spawnChain').onclick = () => { sim.forceSpawn('goldclown'); render(); };
+$('spawnCrab').onclick = () => { sim.forceSpawn('powercrab'); render(); };
+$('spawnBoss').onclick = () => { sim.forceSpawn('dragon'); render(); };
 
 render();
 
@@ -318,7 +329,10 @@ function tick(now) {
     b.x += b.vx; b.y += b.vy;
     if (b.x < 4 || b.x > GW - 4) { b.vx *= -1; b.bounces++; }
     if (b.y < 4 || b.y > GH - 4) { b.vy *= -1; b.bounces++; }
-    if (b.bounces > 8) { sim.resolveMiss(); pops.push({ x: b.x, y: b.y, txt: 'WHIFF', col: '#f87171', a: 1 }); return false; }
+    // bounce-until-hit (the original's design): P(contact)=1 so delivered RTP = target.
+    // Safety net: a bullet that somehow never finds a fish is VOIDED with a refund,
+    // not eaten as a whiff — expiry-as-loss would silently tax the RTP.
+    if (b.bounces > 40) { sim.refundShot(b.bet); pops.push({ x: b.x, y: b.y, txt: 'REFUND', col: '#60a5fa', a: 1 }); return false; }
     for (const [uid, v] of view) {
       if (Math.hypot(b.x - v.x, b.y - v.y) < fishRadius(v.f) + 5) {
         nets.push({ x: b.x, y: b.y, r: 6, a: 1 });

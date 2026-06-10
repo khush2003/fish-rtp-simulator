@@ -166,6 +166,36 @@ class Sim {
     return entry;
   }
 
+  // Void a shot and give the bet back — the RTP-neutral way to retire a bullet
+  // that never found a fish (vs WHIFF, which eats the bet and lowers delivered RTP).
+  refundShot(bet = this.bet) {
+    const s = this.stats;
+    s.wagered -= bet;
+    s.buckets.base.wagered -= bet;
+    s.refunds = (s.refunds || 0) + 1;
+    const entry = { type: 'shot', result: 'REFUND — bullet voided, bet returned (RTP-neutral)' };
+    this.pushLog(entry);
+    return entry;
+  }
+
+  // Inject a feature fish so it can be tried on demand. RTP-invariant:
+  // every fish self-prices (p = RTP/M), so spawning more of anything changes
+  // feel and bucket mix, never the total RTP.
+  forceSpawn(speciesId) {
+    const sp = SPECIES.find(s => s.id === speciesId);
+    if (!sp) return [];
+    const spawned = [];
+    const add = (species) => { const f = { uid: ++this.uid, sp: species }; this.fish.push(f); spawned.push(f); };
+    if (sp.kind === 'boss' && this.fish.some(f => f.sp.kind === 'boss')) return spawned; // one boss rule
+    if (sp.kind === 'chain') {
+      const prey = SPECIES.find(s => s.id === sp.chains);
+      for (let i = 0; i < 4; i++) add(prey);   // give the chain something to chain
+    }
+    add(sp);
+    this.pushLog({ type: 'stage', stage: `force-spawned ${sp.id} (RTP unchanged — it self-prices)` });
+    return spawned;
+  }
+
   // The server answer to "bullet touched fish <uid> on a shot that wagered `bet`"
   resolveContact(uid, bet = this.bet) {
     const f = this.fish.find(o => o.uid === uid);

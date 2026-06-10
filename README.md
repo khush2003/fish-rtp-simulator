@@ -13,7 +13,7 @@ An OceanKing-style fish-shooter casino game replicated **in pure numbers** — p
 | Variable-prize features (snapshot rule) | chain ⚡ and hammer 🔨 prizes are computed from screen contents *at the trigger roll* |
 | Real boss multipliers | the dragon's 1–5× is rolled server-side (E=1.88) and priced into its kill chance |
 | Boss wipe-immunity | hammers kill everything *except* the boss |
-| The miss tax | bullets that whiff still cost the bet — drag the slider and watch delivered RTP = `0.96 × (1 − miss)` |
+| The miss tax | bullets **bounce until they hit** (P(contact)=1); the numeric miss slider shows what expiry-as-loss would cost: delivered RTP = `0.96 × (1 − miss)`. Stuck bullets are voided with a refund, never eaten |
 | HP bars are theater | bars drain randomly on failed rolls; only the probability decides the kill |
 | Spawn director | keeps screen value Σ(M) inside a band; feature fish need a minimum screen value |
 | Stage cycle | NORMAL → BOSS → BONUS swaps spawn tables (volatility scheduling) — total RTP never moves |
@@ -37,3 +37,7 @@ console.log('RTP after 1M shots:', sim.rtp().toFixed(4)); // → ~0.96
 ## Run locally
 
 Just open `index.html` in a browser — no build, no dependencies.
+
+## Try the features
+
+Force-spawn buttons above the canvas summon the chain school ⚡, hammer crab 🔨, and boss 👑 on demand — shoot them and watch the snapshot prizes in the log. Spawning anything never changes total RTP: every fish self-prices at `p = RTP/M`.
