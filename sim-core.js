@@ -12,9 +12,12 @@ const FEATURE_GUARD = 60;    // chain/crab fish only spawn while screen value >=
 // Species table. M = payout multiplier. Ranking mirrors the original game's
 // Score/HP values (fodder ~2x ... sharks 40x ... bosses huge).
 // kind: normal | chain (pays all same-`chains` species) | crab (hammer: 3 screen wipes) | boss
+// Weights tuned for game feel: dense schools of fodder (fuller screens, steady
+// small wins), features rare enough to be events. Weights NEVER affect RTP —
+// every fish self-prices — so this table is free to tune.
 const SPECIES = [
-  { id: 'minnow',    M: 2,   kind: 'normal', w: { normal: 30, boss: 8,  bonus: 0  } },
-  { id: 'clownfish', M: 3,   kind: 'normal', w: { normal: 22, boss: 6,  bonus: 0  } },
+  { id: 'minnow',    M: 2,   kind: 'normal', w: { normal: 42, boss: 10, bonus: 0  } },
+  { id: 'clownfish', M: 3,   kind: 'normal', w: { normal: 28, boss: 8,  bonus: 0  } },
   { id: 'angelfish', M: 5,   kind: 'normal', w: { normal: 16, boss: 5,  bonus: 10 } },
   { id: 'puffer',    M: 8,   kind: 'normal', w: { normal: 10, boss: 4,  bonus: 12 } },
   { id: 'lionfish',  M: 12,  kind: 'normal', w: { normal: 7,  boss: 3,  bonus: 14 } },
@@ -22,8 +25,8 @@ const SPECIES = [
   { id: 'ray',       M: 25,  kind: 'normal', w: { normal: 3,  boss: 2,  bonus: 16 } },
   { id: 'shark',     M: 40,  kind: 'normal', w: { normal: 2,  boss: 1,  bonus: 18 } },
   { id: 'goldclown', M: 6,   kind: 'chain', chains: 'clownfish',
-                                             w: { normal: 3,  boss: 0,  bonus: 8  } },
-  { id: 'powercrab', M: 0,   kind: 'crab',   w: { normal: 2,  boss: 0,  bonus: 8  } },
+                                             w: { normal: 2,  boss: 0,  bonus: 8  } },
+  { id: 'powercrab', M: 0,   kind: 'crab',   w: { normal: 1,  boss: 0,  bonus: 6  } },
   { id: 'dragon',    M: 200, kind: 'boss',   w: { normal: 0,  boss: 1,  bonus: 0  } },
 ];
 
