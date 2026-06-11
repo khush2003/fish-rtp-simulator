@@ -48,6 +48,7 @@
     <button id="spawnBoss">👑 boss</button>
     <button id="aimLock">🎯 aim-lock</button>
     <button id="weapon">🔫 weapon A</button>
+    <button id="turbo">⏩ turbo ×1</button>
     <button id="stress">💥 stress: 300 bullets</button>
     <button id="mute">🔊 sound</button>
     <span class="dim" style="font-size:11px">(spawning anything never changes RTP — every fish self-prices)</span>
@@ -269,6 +270,7 @@ const bullets = [], pops = [], nets = [], dying = [], parts = [], coins = [], ar
 let flash = 0, shake = 0, banner = null, cine = null, lockUid = null, aimLockOn = false;
 let bigwin = null, freezeUntil = 0, muted = false, winPulse = 0;
 let firing = false, lastFire = 0, lastStage = sim.stage().name, mapIdx = 1;
+let turbo = 1, vClock = 0;     // turbo: full-gameplay substeps; vClock = virtual game time (ms)
 let fps = 60, frames = 0, fpsAt = 0, missPopCounter = 0;
 const FIRE_COOLDOWN = 380, BULLET_SPEED = 9;   // ~2.6 shots/s, ~540px/s — watch the shot, feel the wager
 const MAX_PARTS = 450, MAX_BULLETS = 600;
@@ -454,7 +456,7 @@ function present(now) {
 let AC = null;
 function ac() { if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} } return AC; }
 function tone(f0, f1, dur, type, vol, when = 0) {
-  if (muted) return; const a = ac(); if (!a || a.state !== 'running') return;
+  if (muted || turbo > 4) return; const a = ac(); if (!a || a.state !== 'running') return;
   try {
     const t = a.currentTime + when;
     const o = a.createOscillator(), gn = a.createGain();
@@ -485,7 +487,7 @@ function loadSamples() {
 }
 function playSample(name, vol = .5, rate = 1) {
   const a = ac(), buf = SAMPLES[name];
-  if (!a || a.state !== 'running' || muted || !buf) return false;
+  if (!a || a.state !== 'running' || muted || turbo > 4 || !buf) return false;
   try {
     const src = a.createBufferSource(), gn = a.createGain();
     src.buffer = buf; src.playbackRate.value = rate;
@@ -846,7 +848,7 @@ function syncView() {
   const live = new Set(sim.fish.map(f => f.uid));
   for (const [uid, v] of view) if (!live.has(uid)) {
     // corpse copy: no HP bar (a faded fish WITH a bar reads as a ghost twin)
-    dying.push({ ...v, alpha: 1, flash: 1, theater: undefined });
+    if (dying.length < 80) dying.push({ ...v, alpha: 1, flash: 1, theater: undefined });
     view.delete(uid);
     if (lockUid === uid) lockUid = null;
   }
@@ -958,6 +960,7 @@ function sparks(x, y) {
   }
 }
 function spawnCoins(x, y, mult) {
+  if (coins.length > 80) return;
   const n = Math.min(14, 2 + Math.round(Math.sqrt(mult)));
   for (let i = 0; i < n; i++) coins.push({
     x: x + (Math.random() - .5) * 60, y: y + (Math.random() - .5) * 60,
@@ -965,6 +968,7 @@ function spawnCoins(x, y, mult) {
 }
 function zap(a, b) { arcs.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, a: 1 }); }
 function pop(x, y, txt, col, opts = {}) {
+  if (pops.length > 90) pops.shift();
   pops.push({ x, y, txt, col, a: opts.a ?? 1, big: opts.big, small: opts.small, born: performance.now() });
 }
 function celebrate(payout, bet, x, y) {
@@ -1011,6 +1015,12 @@ $('stress').onclick = () => {
   for (let i = 0; i < 300; i++) fireBullet(-Math.PI * (0.08 + 0.84 * (i / 299)));
   render();
 };
+$('turbo').onclick = function () {
+  const TS = [1, 8, 32, 100, 1000];      // ×1000 = lab mode: rendering throttled, all mechanics live
+  turbo = TS[(TS.indexOf(turbo) + 1) % TS.length];
+  this.textContent = '⏩ turbo ×' + turbo + (turbo >= 1000 ? ' (lab)' : '');
+  this.classList.toggle('on', turbo > 1);
+};
 
 function pickLockTarget() {
   let best = null, bestM = -1;
@@ -1023,15 +1033,13 @@ function pickLockTarget() {
 }
 
 let lastNow = performance.now();
-function tick(now) {
-  let dt = Math.min(now - lastNow, 50); lastNow = now;
-  if (now < freezeUntil) dt *= 0.12;
+// ONE full gameplay step at real-time granularity. Turbo runs N of these per
+// frame — identical physics/collisions/spawns/stages, just more of them, so
+// the accelerated RTP measures the REAL gameplay path (wager at fire,
+// snapshot at contact, refunds, stage clears — everything).
+function step(now, dt) {
   const k = dt / 16.667;
-
-  frames++;
-  if (now - fpsAt > 500) { fps = frames * 1000 / (now - fpsAt); frames = 0; fpsAt = now; }
-  winPulse = Math.max(0, winPulse - 0.012 * k);
-
+  vClock += dt;
   syncView();
 
   if (sim.stage().name !== lastStage) {
@@ -1084,7 +1092,7 @@ function tick(now) {
       v.dir = ang;
     }
     // swim wake: bubble trail shed behind the tail — the water reacts to the fish
-    if ((v.wakeAt || 0) < now && (v.z || 1) >= 0.86 && fps >= 45 && v.t >= 0) {
+    if (turbo === 1 && (v.wakeAt || 0) < now && (v.z || 1) >= 0.86 && fps >= 45 && v.t >= 0) {
       const r = fishRadius(v.f) * (v.z || 1);
       v.wakeAt = now + (v.f.sp.kind === 'boss' ? 130 : 260) + Math.random() * 200;
       wakes.push({ x: v.x - Math.cos(v.dir || 0) * r * 1.5 + (Math.random() - .5) * 6,
@@ -1111,7 +1119,16 @@ function tick(now) {
     } else cine.nextAt = now + 800;
   }
 
-  if (firing && now - lastFire > FIRE_COOLDOWN) { lastFire = now; fireBullet(); }
+  // fire: the player's pointer, or turbo autoplay aiming at a random visible
+  // fish like a player would (cooldown measured in VIRTUAL time so the fire
+  // rate scales with the rest of the game)
+  if ((firing || turbo > 1) && vClock - lastFire > FIRE_COOLDOWN) {
+    lastFire = vClock;
+    if (!firing) {
+      const t = pickVisibleTarget();
+      if (t) { CANNON.angle = Math.atan2(t.y - CANNON.y, t.x - CANNON.x); fireBullet(); }
+    } else fireBullet();
+  }
 
   compact(bullets, b => {
     b.px = b.x; b.py = b.y;
@@ -1178,8 +1195,25 @@ function tick(now) {
     return true;
   });
 
-  draw(now, k);
-  present(now);
+}
+
+function pickVisibleTarget() {              // reservoir-sample a live on-screen fish
+  let n = 0, pick = null;
+  for (const v of view.values()) if (v.t >= 0) { n++; if (Math.random() * n < 1) pick = v; }
+  return pick;
+}
+
+function tick(now) {
+  let dt = Math.min(now - lastNow, 50); lastNow = now;
+  if (turbo === 1 && now < freezeUntil) dt *= 0.12;   // hitstop only at 1× — turbo must never slow
+  frames++;
+  if (now - fpsAt > 500) { fps = frames * 1000 / (now - fpsAt); frames = 0; fpsAt = now; }
+  winPulse = Math.max(0, winPulse - 0.012 * (dt / 16.667));
+  for (let s = 0; s < turbo; s++) step(now, dt);      // substeps: full physics each, no tunneling
+  if (turbo < 1000 || frames % 20 === 0) {            // lab mode: draw ~3fps, simulate flat-out
+    draw(now, dt / 16.667);
+    present(now);
+  }
   requestAnimationFrame(tick);
 }
 
