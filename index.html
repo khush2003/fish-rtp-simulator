@@ -265,7 +265,7 @@ const g = gameCv.getContext('2d');
 
 const CANNON = { x: GW / 2, y: GH - 16, angle: -Math.PI / 2, recoil: 0, flash: 0 };
 const view = new Map();
-const bullets = [], pops = [], nets = [], dying = [], parts = [], coins = [], arcs = [], bubbles = [];
+const bullets = [], pops = [], nets = [], dying = [], parts = [], coins = [], arcs = [], bubbles = [], wakes = [];
 let flash = 0, shake = 0, banner = null, cine = null, lockUid = null, aimLockOn = false;
 let bigwin = null, freezeUntil = 0, muted = false, winPulse = 0;
 let firing = false, lastFire = 0, lastStage = sim.stage().name, mapIdx = 1;
@@ -282,7 +282,7 @@ function compact(arr, keep) {
 }
 function addShock(x, y, strength) {
   shocks.push({ x: x / GW, y: y / GH, start: performance.now(), strength });
-  if (shocks.length > 3) shocks.shift();
+  if (shocks.length > 2) shocks.shift();   // slot 0 is reserved for the boss's standing ripple
 }
 
 // ---------- WebGL post-processing pipeline ----------
@@ -360,11 +360,6 @@ function swapTo2D() {
       // the refraction only bends the water behind the fish, never the fish
       vec2 guv = uv;
       vec4 game = texture2D(uGame, guv);
-      if (uWin > 0.001){
-        vec2 off = (uv-0.5)*0.014*uWin;
-        game.r = texture2D(uGame, clamp(guv+off,0.0,1.0)).r;
-        game.b = texture2D(uGame, clamp(guv-off,0.0,1.0)).b;
-      }
       vec3 col = bg*(1.0-game.a) + game.rgb;
 
       // cheap threshold bloom (8 taps)
@@ -376,7 +371,7 @@ function swapTo2D() {
         vec4 t2 = texture2D(uGame, clamp(guv-o,0.0,1.0));
         glow += max(t1.rgb-0.5,0.0) + max(t2.rgb-0.5,0.0);
       }
-      col += glow*0.16;
+      col += glow*(0.16 + uWin*0.5);   // big wins boost the bloom — glow, never ghosts
 
       // vignette
       col *= smoothstep(1.3, 0.42, length(uv-0.5)*1.62);
@@ -436,11 +431,18 @@ function present(now) {
   gl.uniform3f(uLoc.uTint, t[0], t[1], t[2]);
   shockArr.fill(0);
   compact(shocks, s => (now - s.start) < 1300);
-  for (let i = 0; i < Math.min(shocks.length, 3); i++) {
-    const s = shocks[i];
-    shockArr[i * 4] = s.x; shockArr[i * 4 + 1] = s.y;
-    shockArr[i * 4 + 2] = (now - s.start) / 1000;
-    shockArr[i * 4 + 3] = s.strength;
+  // slot 0: standing ripple pinned to the boss — its bulk visibly bends the water
+  for (const v of view.values()) if (v.f.sp.kind === 'boss' && v.t >= 0) {
+    shockArr[0] = v.x / GW; shockArr[1] = v.y / GH;
+    shockArr[2] = 0.16 + Math.sin(now / 380) * 0.05;   // pinned age → breathing ring
+    shockArr[3] = 0.5;
+    break;
+  }
+  for (let i = 0; i < Math.min(shocks.length, 2); i++) {
+    const s = shocks[i], o = (i + 1) * 4;
+    shockArr[o] = s.x; shockArr[o + 1] = s.y;
+    shockArr[o + 2] = (now - s.start) / 1000;
+    shockArr[o + 3] = s.strength;
   }
   gl.uniform4fv(uLoc.uShock, shockArr);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -934,6 +936,14 @@ function tick(now) {
       v.y = p.y + Math.sin(ang + Math.PI / 2) * lat;
       v.dir = ang;
     }
+    // swim wake: bubble trail shed behind the tail — the water reacts to the fish
+    if ((v.wakeAt || 0) < now && (v.z || 1) >= 0.86 && fps >= 45 && v.t >= 0) {
+      const r = fishRadius(v.f) * (v.z || 1);
+      v.wakeAt = now + (v.f.sp.kind === 'boss' ? 130 : 260) + Math.random() * 200;
+      wakes.push({ x: v.x - Math.cos(v.dir || 0) * r * 1.5 + (Math.random() - .5) * 6,
+                   y: v.y - Math.sin(v.dir || 0) * r * 1.5 + (Math.random() - .5) * 6,
+                   r: 1 + Math.random() * (v.f.sp.kind === 'boss' ? 3.5 : 1.8), a: .5 });
+    }
   }
 
   if (aimLockOn && (lockUid == null || !view.has(lockUid))) lockUid = pickLockTarget();
@@ -1042,11 +1052,33 @@ function draw(now, k) {
   for (const sn of snow) {
     sn.y += 0.12 * sn.z * k;
     sn.x += FLOW * sn.z * 0.8 * k + Math.sin(now / 900 + sn.y * .05) * 0.15 * k;
+    // passing fish shove the suspended particles aside — displaced water
+    for (const v of view.values()) {
+      if (v.t < 0) continue;
+      const dx = sn.x - v.x, dy = sn.y - v.y;
+      const rr = fishRadius(v.f) * (v.z || 1) + 14;
+      if (dx * dx + dy * dy < rr * rr) {
+        const d = Math.max(Math.hypot(dx, dy), 1);
+        sn.x += dx / d * 1.1 * k; sn.y += dy / d * 1.1 * k;
+        break;
+      }
+    }
     if (sn.y > GH + 3) { sn.y = -3; sn.x = Math.random() * GW; }
     if (sn.x < -3) sn.x = GW + 3; else if (sn.x > GW + 3) sn.x = -3;
     g.globalAlpha = .12 + .25 * sn.z;
     g.fillRect(sn.x, sn.y, 1.6 * sn.z + .6, 1.6 * sn.z + .6);
   }
+  g.globalAlpha = 1;
+
+  // fish wakes: shed bubbles rise, expand, fade
+  g.strokeStyle = 'rgba(170,205,240,.8)'; g.lineWidth = 1;
+  compact(wakes, w => {
+    w.y -= 0.18 * k; w.r += 0.05 * k; w.a -= 0.011 * k;
+    if (w.a <= 0) return false;
+    g.globalAlpha = w.a;
+    g.beginPath(); g.arc(w.x, w.y, w.r, 0, 7); g.stroke();
+    return true;
+  });
   g.globalAlpha = 1;
 
   g.fillStyle = 'rgba(140,180,230,0.18)';
