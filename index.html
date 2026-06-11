@@ -819,6 +819,29 @@ function bezD(P, t) {
            y: 2 * (u * (P.C.y - P.S.y) + t * (P.E.y - P.C.y)) };
 }
 
+// REAL formation shapes extracted from the original's prefabs.
+// Offsets are [x, y] in the prefab's local space (unity: +y = forward).
+const FORMS = {
+  penta: [[2.2, -74], [-32, -4.3], [40.5, -5.1], [66.1, 74], [-66.1, 66.5]],   // GF_Group.prefab — the 5-fish diamond cluster
+  quad:  [[-69, 45.9], [99, 45.9], [-77.6, -162.2], [79.5, -162.2]],           // *QuadrupleGold.prefab — 2×2 box
+  trio:  [[0, 25], [-73, -100], [79.5, -95]],                                  // Kirin *Triple.prefab — leader + two wingmen
+  pair:  [[-54.7, -4.3], [62.2, -5.1]],                                        // FlyfishForPattern.prefab
+  solo:  [[0, 0]],
+};
+function chunkUnits(n) {           // split a school into prefab-sized units
+  const out = [];
+  while (n > 0) {
+    if (n >= 5) { out.push('penta'); n -= 5; }
+    else if (n === 4) { out.push('quad'); n -= 4; }
+    else if (n === 3) { out.push('trio'); n -= 3; }
+    else if (n === 2) { out.push('pair'); n -= 2; }
+    else { out.push('solo'); n -= 1; }
+  }
+  return out;
+}
+// the original TrianglePattern's sawtooth waypoints (scene values, x ±1400ish, y 0/432)
+const SAWTOOTH = [[-1400, 0], [-788, 432], [-400, 0], [35, 432], [433, 0], [899, 432], [1488, 0]];
+
 function syncView() {
   const live = new Set(sim.fish.map(f => f.uid));
   for (const [uid, v] of view) if (!live.has(uid)) {
@@ -857,31 +880,52 @@ function syncView() {
       const roll = Math.random();
       const mkStraight = () => {
         const fromLeft = Math.random() < .5;
-        const S = { x: fromLeft ? -40 : GW + 40, y: 40 + Math.random() * (GH * .55) };
-        const E = { x: fromLeft ? GW + 40 : -40, y: GH * .35 + (Math.random() - .5) * GH * .2 }; // GetRandomEndPointMid: exit in mid band
+        const S = { x: fromLeft ? -60 : GW + 60, y: 40 + Math.random() * (GH * .55) };
+        const E = { x: fromLeft ? GW + 60 : -60, y: GH * .35 + (Math.random() - .5) * GH * .2 }; // GetRandomEndPointMid: exit in mid band
         const P = { S, E, C: { x: (S.x + E.x) / 2, y: (S.y + E.y) / 2 }, t: 0,
                     dur: ((9500 + Math.random() * 2500) / (SPEED[sp.id] ?? .45)) / z };
         return P;
       };
-      if (roll < .45) {
-        // STRAIGHT PARADE — single file on a dead-straight line, like the
-        // original's Straight pattern (control point collapsed → no curve)
-        const P = mkStraight();
+      if (roll < .5) {
+        // CLUSTER TRAIN — the original GFManager look: prefab formation units
+        // (penta/quad/trio/pair, exact GF_Group offsets) marching one shared
+        // path, one unit every 1.5s; each unit banks/turns as a rigid body
+        const P = Math.random() < .6 ? mkStraight() : (() => { const p = newPath(null, sp); p.dur /= z; return p; })();
+        const s = fishRadius({ sp }) * z / 16;        // scale prefab px → our fish size
+        const unitGap = 1500 / P.dur;                 // GFManager spawnInterval = 1.5s
+        let gi = 0;
+        chunkUnits(group.length).forEach((kind, u) => {
+          for (const [ox, oy] of FORMS[kind]) {
+            const f = group[gi++]; if (!f) break;
+            // unity local: +y = forward → fx (along) = oy, fy (perp) = ox
+            view.set(f.uid, { ...P, f, theater: 1, mode: 'flock', flash: 0, z,
+              fx: oy * s, fy: ox * s, t: -u * unitGap, wig: Math.random() * 7 });
+          }
+        });
+      } else if (roll < .65) {
+        // SAWTOOTH WAVE — the original TrianglePattern: single file zig-zagging
+        // through the scene's exact 7 waypoints (50 fish at 0.2s in the original)
+        const pts = SAWTOOTH.map(([x, y]) => ({
+          x: (x + 1480) / 2960 * (GW + 160) - 80,
+          y: GH * 0.62 - (y / 750) * GH * 0.52 }));
+        if (Math.random() < .5) pts.reverse();
+        const segDur = 1500 / z;                      // Move.cs: 1.5s per segment
+        group.forEach((f, i) => view.set(f.uid, { f, theater: 1, mode: 'way', flash: 0, z,
+          pts, segDur, t: -i * (350 / segDur), wig: Math.random() * 7 }));
+      } else if (roll < .85) {
+        // PARADES — horizontal mid-band crossing, or the Nemo vertical lines
+        // (scene lanes at x = 0, ±480 of a ±1480 canvas)
+        let P;
+        if (Math.random() < .4) {
+          const lane = [0.5, 0.5 - 480 / 2960, 0.5 + 480 / 2960][Math.floor(Math.random() * 3)] * GW;
+          const down = Math.random() < .5;
+          P = { S: { x: lane, y: down ? -40 : GH + 40 }, E: { x: lane, y: down ? GH + 40 : -40 },
+                C: { x: lane, y: GH / 2 }, t: 0,
+                dur: ((9500 + Math.random() * 2500) / (SPEED[sp.id] ?? .45)) / z };
+        } else P = mkStraight();
         const gap = Math.min(700 / P.dur, 0.4 / group.length);
         group.forEach((f, i) => view.set(f.uid, { ...P, f, theater: 1, mode: 'bez', flash: 0, z,
           t: -i * gap, lat: 0, wig: Math.random() * 7 }));
-      } else if (roll < .75 && group.length >= 6) {
-        // CASCADE — 2-3 parallel columns sharing one straight path, column
-        // delays shaped like the original's half-circle AnimationCurve ramp
-        const P = mkStraight();
-        const cols = group.length >= 9 ? 3 : 2;
-        const gap = Math.min(800 / P.dur, 0.35 / Math.ceil(group.length / cols));
-        group.forEach((f, i) => {
-          const c = i % cols, row = (i / cols) | 0;
-          const colDelay = Math.sin((c + 1) / (cols + 1) * Math.PI) * gap * 1.2; // ")" arc wavefront
-          view.set(f.uid, { ...P, f, theater: 1, mode: 'bez', flash: 0, z,
-            t: -(row * gap + colDelay), lat: (c - (cols - 1) / 2) * 34, wig: Math.random() * 7 });
-        });
       } else {
         // curved SNAKE train (the wandering queue)
         const P = newPath(null, sp); P.dur /= z;
@@ -1007,6 +1051,27 @@ function tick(now) {
       const nx = c.x + Math.cos(a) * v.R, ny = c.y + Math.sin(a) * v.R;
       v.dir = Math.atan2(ny - (v.y ?? ny), (nx - (v.x ?? nx)) || 0.001);
       v.x = nx; v.y = ny;
+    } else if (v.mode === 'flock') {
+      // rigid-body school: leader runs the path, member = leader + rotated offset
+      v.t += dt / v.dur;
+      if (v.t >= 1) { Object.assign(v, { ...newPath({ x: v.x, y: v.y }, v.f.sp), mode: 'bez' }); continue; }
+      const tt = smooth(Math.max(Math.min(v.t, 1), 0));
+      const p = bez(v, tt), d = bezD(v, tt);
+      const ang = Math.atan2(d.y, d.x);
+      const ca = Math.cos(ang), sa = Math.sin(ang);
+      v.x = p.x + v.fx * ca - v.fy * sa;
+      v.y = p.y + v.fx * sa + v.fy * ca;
+      v.dir = ang;
+    } else if (v.mode === 'way') {
+      // waypoint sawtooth (the original's Triangle pattern: straight segs, 1.5s each)
+      v.t += dt / v.segDur;                 // t counts segments
+      const seg = Math.floor(Math.max(v.t, 0));
+      if (seg >= v.pts.length - 1) { Object.assign(v, { ...newPath({ x: v.x, y: v.y }, v.f.sp), mode: 'bez' }); continue; }
+      const u = Math.max(Math.min(v.t - seg, 1), 0);
+      const A = v.pts[seg], B = v.pts[seg + 1];
+      v.x = A.x + (B.x - A.x) * u;
+      v.y = A.y + (B.y - A.y) * u;
+      v.dir = Math.atan2(B.y - A.y, B.x - A.x);
     } else {
       v.t += dt / v.dur;
       if (v.t >= 1) { const P = newPath({ x: v.x, y: v.y }, v.f.sp); P.dur /= (v.z || 1); Object.assign(v, P); }
