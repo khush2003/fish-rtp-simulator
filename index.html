@@ -851,13 +851,44 @@ function syncView() {
       group.forEach((f, i) => view.set(f.uid, { f, theater: 1, mode: 'circle', cP, R, flash: 0, z,
         a0: i / group.length * Math.PI * 2, revs: 2 + Math.random() * 1.5, t: 0, wig: Math.random() * 7 }));
     } else if (group.length >= 3 && sp.kind === 'normal') {
-      // school → single-file TRAIN, evenly spaced on one shared path (the
-      // original's signature look: snaking queues of identical fish)
-      const P = newPath(null, sp); P.dur /= z;
-      // time-based spacing: ~0.7s between train members regardless of path length
-      const gap = Math.min(700 / P.dur, 0.4 / group.length);
-      group.forEach((f, i) => view.set(f.uid, { ...P, f, theater: 1, mode: 'bez', flash: 0, z,
-        t: -i * gap, lat: (i % 2 ? 1 : -1) * 2.5, wig: Math.random() * 7 }));
+      // schools use the ORIGINAL's pattern system (PatternFishManager):
+      // straight parades (curveDistance=0, mid-band crossing), multi-column
+      // cascades with arc delays (PatternFishManagerSetter), or a curved snake
+      const roll = Math.random();
+      const mkStraight = () => {
+        const fromLeft = Math.random() < .5;
+        const S = { x: fromLeft ? -40 : GW + 40, y: 40 + Math.random() * (GH * .55) };
+        const E = { x: fromLeft ? GW + 40 : -40, y: GH * .35 + (Math.random() - .5) * GH * .2 }; // GetRandomEndPointMid: exit in mid band
+        const P = { S, E, C: { x: (S.x + E.x) / 2, y: (S.y + E.y) / 2 }, t: 0,
+                    dur: ((9500 + Math.random() * 2500) / (SPEED[sp.id] ?? .45)) / z };
+        return P;
+      };
+      if (roll < .45) {
+        // STRAIGHT PARADE — single file on a dead-straight line, like the
+        // original's Straight pattern (control point collapsed → no curve)
+        const P = mkStraight();
+        const gap = Math.min(700 / P.dur, 0.4 / group.length);
+        group.forEach((f, i) => view.set(f.uid, { ...P, f, theater: 1, mode: 'bez', flash: 0, z,
+          t: -i * gap, lat: 0, wig: Math.random() * 7 }));
+      } else if (roll < .75 && group.length >= 6) {
+        // CASCADE — 2-3 parallel columns sharing one straight path, column
+        // delays shaped like the original's half-circle AnimationCurve ramp
+        const P = mkStraight();
+        const cols = group.length >= 9 ? 3 : 2;
+        const gap = Math.min(800 / P.dur, 0.35 / Math.ceil(group.length / cols));
+        group.forEach((f, i) => {
+          const c = i % cols, row = (i / cols) | 0;
+          const colDelay = Math.sin((c + 1) / (cols + 1) * Math.PI) * gap * 1.2; // ")" arc wavefront
+          view.set(f.uid, { ...P, f, theater: 1, mode: 'bez', flash: 0, z,
+            t: -(row * gap + colDelay), lat: (c - (cols - 1) / 2) * 34, wig: Math.random() * 7 });
+        });
+      } else {
+        // curved SNAKE train (the wandering queue)
+        const P = newPath(null, sp); P.dur /= z;
+        const gap = Math.min(700 / P.dur, 0.4 / group.length);
+        group.forEach((f, i) => view.set(f.uid, { ...P, f, theater: 1, mode: 'bez', flash: 0, z,
+          t: -i * gap, lat: (i % 2 ? 1 : -1) * 2.5, wig: Math.random() * 7 }));
+      }
     } else {
       for (const f of group) {
         const P = newPath(null, sp); P.dur /= z;
