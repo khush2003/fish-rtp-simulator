@@ -47,6 +47,7 @@
     <button id="spawnCrab">🔨 hammer crab</button>
     <button id="spawnBoss">👑 boss</button>
     <button id="aimLock">🎯 aim-lock</button>
+    <button id="weapon">🔫 weapon A</button>
     <button id="stress">💥 stress: 300 bullets</button>
     <button id="mute">🔊 sound</button>
     <span class="dim" style="font-size:11px">(spawning anything never changes RTP — every fish self-prices)</span>
@@ -269,7 +270,7 @@ let flash = 0, shake = 0, banner = null, cine = null, lockUid = null, aimLockOn 
 let bigwin = null, freezeUntil = 0, muted = false, winPulse = 0;
 let firing = false, lastFire = 0, lastStage = sim.stage().name, mapIdx = 1;
 let fps = 60, frames = 0, fpsAt = 0, missPopCounter = 0;
-const FIRE_COOLDOWN = 240, BULLET_SPEED = 14;
+const FIRE_COOLDOWN = 380, BULLET_SPEED = 9;   // ~2.6 shots/s, ~540px/s — watch the shot, feel the wager
 const MAX_PARTS = 450, MAX_BULLETS = 600;
 const Z_LAYERS = [0.72, 0.86, 1];
 const shocks = [];                                  // {x,y,start,strength} → shader ripples
@@ -482,13 +483,23 @@ function fishRadius(f) {
   const m = f.sp.kind === 'boss' ? 80 : f.sp.kind === 'crab' ? 20 : f.sp.M;
   return 11 + Math.sqrt(m) * 2.4;
 }
-function fishColor(f) {
-  if (f.sp.kind === 'boss') return '#fbbf24';
-  if (f.sp.kind === 'chain') return '#f59e0b';
-  if (f.sp.kind === 'crab') return '#fb7185';
-  const hues = { 2: 200, 3: 180, 5: 160, 8: 140, 12: 100, 18: 60, 25: 30, 40: 0 };
-  return `hsl(${hues[f.sp.M] ?? 220} 70% 60%)`;
-}
+// 3-tone palette per species → baked radial-gradient "volume" shading
+const PAL = (() => {
+  const hues = { minnow: 200, clownfish: 18, angelfish: 160, puffer: 48, lionfish: 0, turtle: 95, ray: 230, shark: 210 };
+  const p = {};
+  for (const sp of SC.SPECIES) {
+    if (sp.kind === 'normal') {
+      const h = hues[sp.id] ?? 220;
+      const s = sp.id === 'shark' ? 18 : 70;                 // sharks are grey-blue
+      p[sp.id] = { base: `hsl(${h} ${s}% 56%)`, light: `hsl(${h} ${s + 8}% 78%)`, dark: `hsl(${h} ${s}% 30%)` };
+    }
+  }
+  p.goldclown = { base: '#f59e0b', light: '#fde68a', dark: '#92400e' };
+  p.powercrab = { base: '#fb7185', light: '#fecdd3', dark: '#9f1239' };
+  p.dragon    = { base: '#fbbf24', light: '#fef3c7', dark: '#92400e' };
+  return p;
+})();
+function fishColor(f) { return PAL[f.sp.id].base; }
 
 // ---------- SPRITE BAKERY (unchanged shapes from the polish pass) ----------
 const SPRITES = {};
@@ -498,140 +509,218 @@ function bakeAll() {
     const r = fishRadius(fake), col = fishColor(fake);
     const W = Math.ceil(r * 4.2), H = Math.ceil(r * 3.2);
     const frames = [];
-    for (let k = 0; k < 4; k++) {
+    for (let k = 0; k < 6; k++) {
       const c = document.createElement('canvas');
       c.width = W * 2; c.height = H * 2;
       const q = c.getContext('2d');
       q.scale(2, 2); q.translate(W * 0.56, H / 2);
-      drawBody(q, sp, r, col, Math.sin(k / 4 * Math.PI * 2) * r * 0.22);
+      drawBody(q, sp, r, col, Math.sin(k / 6 * Math.PI * 2) * r * 0.22);
       frames.push(c);
     }
     SPRITES[sp.id] = { frames, w: W, h: H, ax: W * 0.56, ay: H / 2 };
   }
 }
-function shade(q, r, ry) {
-  q.shadowBlur = 0;
-  q.globalAlpha = .28; q.fillStyle = '#ffffff';
-  q.beginPath(); q.ellipse(0, -ry * .35, r * 1.05, ry * .45, 0, 0, 7); q.fill();
-  q.globalAlpha = .22; q.fillStyle = '#000000';
-  q.beginPath(); q.ellipse(0, ry * .45, r * 1.05, ry * .4, 0, 0, 7); q.fill();
-  q.globalAlpha = 1;
+// volume kit: every body gets a 3-tone radial gradient (light from upper-left),
+// a scale texture, a rim light along the lit edge, and an outline — the cheap
+// trinity that reads as "3D" at sprite scale.
+function bodyGrad(q, pal, r, ry) {
+  const gr = q.createRadialGradient(-r * .3, -ry * .5, r * .15, 0, 0, r * 1.6);
+  gr.addColorStop(0, pal.light); gr.addColorStop(.45, pal.base); gr.addColorStop(1, pal.dark);
+  return gr;
+}
+function scaleTex(q, pal, rx, ry) {
+  q.save();
+  q.beginPath(); q.ellipse(0, 0, rx, ry, 0, 0, 7); q.clip();
+  q.strokeStyle = pal.dark; q.globalAlpha = .18; q.lineWidth = 1;
+  for (let row = -2; row <= 2; row++)
+    for (let i = -3; i <= 3; i++) {
+      q.beginPath();
+      q.arc(i * rx * .3 + (row % 2 ? rx * .15 : 0), row * ry * .4, Math.max(2.5, rx * .14), .6, Math.PI - .6);
+      q.stroke();
+    }
+  q.restore(); q.globalAlpha = 1;
+}
+function rimLight(q, rx, ry) {
+  q.strokeStyle = 'rgba(255,255,255,.5)'; q.lineWidth = 1.6;
+  q.beginPath(); q.ellipse(0, 0, rx * .94, ry * .9, 0, Math.PI * 1.15, Math.PI * 1.85); q.stroke();
 }
 function outlineEllipse(q, rx, ry) {
-  q.shadowBlur = 0; q.strokeStyle = 'rgba(0,0,0,.35)'; q.lineWidth = 1.5;
+  q.shadowBlur = 0; q.strokeStyle = 'rgba(0,0,10,.4)'; q.lineWidth = 1.5;
   q.beginPath(); q.ellipse(0, 0, rx, ry, 0, 0, 7); q.stroke();
 }
 function drawBody(q, sp, r, col, flap) {
+  const pal = PAL[sp.id];
   const glow = sp.kind !== 'normal';
-  if (glow) { q.shadowColor = col; q.shadowBlur = 16; }
-  q.fillStyle = col;
-  q.save(); q.globalAlpha = .85;
+  if (glow) { q.shadowColor = pal.base; q.shadowBlur = 16; }
+  // tail: dark-to-base gradient, flapping
+  const tg = q.createLinearGradient(-r * 1.7, 0, -r * .9, 0);
+  tg.addColorStop(0, pal.dark); tg.addColorStop(1, pal.base);
+  q.fillStyle = tg;
   q.beginPath(); q.moveTo(-r * 1.0, 0); q.lineTo(-r * 1.65, -r * 0.5 + flap); q.lineTo(-r * 1.45, flap); q.lineTo(-r * 1.65, r * 0.5 + flap); q.closePath(); q.fill();
-  q.restore();
+
   if (sp.id === 'shark') {
+    q.fillStyle = bodyGrad(q, pal, r * 1.2, r * .62);
     q.beginPath(); q.ellipse(0, 0, r * 1.45, r * 0.62, 0, 0, 7); q.fill();
     q.beginPath(); q.moveTo(-r * .15, -r * .5); q.lineTo(r * .25, -r * 1.15); q.lineTo(r * .5, -r * .45); q.closePath(); q.fill();
-    shade(q, r * 1.2, r * .62);
-    q.fillStyle = 'rgba(255,255,255,.4)';
-    q.beginPath(); q.ellipse(r * .1, r * .24, r * 1.1, r * .26, 0, 0, 7); q.fill();
-    q.strokeStyle = 'rgba(0,0,0,.3)'; q.lineWidth = 1.2;
+    q.shadowBlur = 0;
+    q.fillStyle = 'rgba(255,255,255,.45)';
+    q.beginPath(); q.ellipse(r * .1, r * .24, r * 1.1, r * .26, 0, 0, 7); q.fill();   // white belly
+    q.strokeStyle = 'rgba(0,0,10,.35)'; q.lineWidth = 1.2;
     for (let i = 0; i < 3; i++) { q.beginPath(); q.moveTo(r * .55 + i * 4, -r * .15); q.lineTo(r * .55 + i * 4, r * .12); q.stroke(); }
+    rimLight(q, r * 1.35, r * .58);
     outlineEllipse(q, r * 1.45, r * .62);
   } else if (sp.id === 'ray') {
+    q.fillStyle = bodyGrad(q, pal, r, r);
     q.beginPath(); q.moveTo(r * 1.2, 0); q.quadraticCurveTo(0, -r * 1.2, -r * .9, 0); q.quadraticCurveTo(0, r * 1.2, r * 1.2, 0); q.fill();
     q.fillRect(-r * 1.75, -1.5, r * .95, 3);
-    shade(q, r * .95, r * .8);
-    q.fillStyle = 'rgba(255,255,255,.5)';
+    q.shadowBlur = 0;
+    q.strokeStyle = pal.dark; q.globalAlpha = .35; q.lineWidth = 1.2;          // wing pleats
+    for (let i = 1; i <= 3; i++) {
+      q.beginPath(); q.moveTo(r * .9 - i * r * .35, -r * .25 * i); q.quadraticCurveTo(r * 1.05 - i * r * .3, 0, r * .9 - i * r * .35, r * .25 * i); q.stroke();
+    }
+    q.globalAlpha = 1;
+    q.fillStyle = 'rgba(255,255,255,.6)';
     q.beginPath(); q.arc(-r * .1, -r * .25, 2, 0, 7); q.arc(r * .25, -r * .3, 2, 0, 7); q.fill();
+    rimLight(q, r * .95, r * .9);
   } else if (sp.id === 'turtle') {
+    q.fillStyle = bodyGrad(q, pal, r, r * .85);
     q.beginPath(); q.ellipse(0, 0, r * 1.05, r * 0.85, 0, 0, 7); q.fill();
-    shade(q, r * 1.0, r * .85);
-    q.strokeStyle = 'rgba(0,0,0,.3)'; q.lineWidth = 1.5;
+    q.shadowBlur = 0;
+    q.strokeStyle = pal.dark; q.globalAlpha = .5; q.lineWidth = 1.5;           // shell plates
     for (let i = -1; i <= 1; i++) { q.beginPath(); q.arc(i * r * .45, 0, r * .3, 0, 7); q.stroke(); }
-    q.fillStyle = col; q.beginPath(); q.arc(r * 1.15, 0, r * .3, 0, 7); q.fill();
-    q.fillStyle = 'rgba(0,0,0,.2)';
+    q.beginPath(); q.ellipse(0, 0, r * .8, r * .62, 0, 0, 7); q.stroke();
+    q.globalAlpha = 1;
+    q.fillStyle = bodyGrad(q, pal, r * .3, r * .3);
+    q.beginPath(); q.arc(r * 1.15, 0, r * .3, 0, 7); q.fill();                 // head
+    q.fillStyle = pal.dark; q.globalAlpha = .6;
     q.beginPath(); q.ellipse(-r * .2, -r * .85, r * .3, r * .14, -.4, 0, 7); q.fill();
     q.beginPath(); q.ellipse(-r * .2, r * .85, r * .3, r * .14, .4, 0, 7); q.fill();
+    q.globalAlpha = 1;
+    rimLight(q, r, r * .8);
     outlineEllipse(q, r * 1.05, r * .85);
   } else if (sp.id === 'puffer') {
+    q.fillStyle = bodyGrad(q, pal, r * .9, r * .9);
     q.beginPath(); q.arc(0, 0, r * .95, 0, 7); q.fill();
-    q.shadowBlur = 0; q.strokeStyle = col; q.lineWidth = 2;
+    q.shadowBlur = 0; q.strokeStyle = pal.dark; q.lineWidth = 2;
     for (let i = 0; i < 12; i++) { const a = i / 12 * Math.PI * 2;
       q.beginPath(); q.moveTo(Math.cos(a) * r * .92, Math.sin(a) * r * .92);
       q.lineTo(Math.cos(a) * r * 1.22, Math.sin(a) * r * 1.22); q.stroke(); }
-    shade(q, r * .85, r * .85);
-    q.fillStyle = 'rgba(0,0,0,.18)';
+    q.fillStyle = pal.dark; q.globalAlpha = .35;
     for (let i = 0; i < 5; i++) { q.beginPath(); q.arc((i % 3 - 1) * r * .4, ((i / 2 | 0) - 1) * r * .35, 2.2, 0, 7); q.fill(); }
+    q.globalAlpha = 1;
+    rimLight(q, r * .85, r * .85);
   } else if (sp.kind === 'crab') {
+    q.fillStyle = bodyGrad(q, pal, r * .8, r * .8);
     q.beginPath(); q.arc(0, 0, r * .85, 0, 7); q.fill();
     q.beginPath(); q.arc(r * .85, -r * .55, r * .38, 0, 7); q.fill();
     q.beginPath(); q.arc(r * .85, r * .55, r * .38, 0, 7); q.fill();
-    shade(q, r * .8, r * .8);
-    q.strokeStyle = col; q.lineWidth = 2.5;
+    q.shadowBlur = 0;
+    q.strokeStyle = pal.dark; q.lineWidth = 2.5;
     for (const s of [-1, 1]) for (let i = 0; i < 3; i++) {
       q.beginPath(); q.moveTo(-r * .2 + i * r * .3, s * r * .8); q.lineTo(-r * .35 + i * r * .3, s * r * 1.15); q.stroke(); }
+    q.strokeStyle = pal.dark; q.globalAlpha = .5;                               // claw pincers
+    q.beginPath(); q.moveTo(r * 1.05, -r * .7); q.lineTo(r * 1.25, -r * .55); q.stroke();
+    q.beginPath(); q.moveTo(r * 1.05, r * .7); q.lineTo(r * 1.25, r * .55); q.stroke();
+    q.globalAlpha = 1;
+    rimLight(q, r * .75, r * .75);
   } else if (sp.kind === 'boss') {
+    q.fillStyle = bodyGrad(q, pal, r * 1.15, r * .75);
     q.beginPath(); q.ellipse(0, 0, r * 1.3, r * 0.75, 0, 0, 7); q.fill();
     q.beginPath(); q.moveTo(r * .45, -r * .55); q.lineTo(r * .7, -r * 1.2); q.lineTo(r * .95, -r * .5); q.closePath(); q.fill();
     q.beginPath(); q.moveTo(r * .0, -r * .6); q.lineTo(r * .2, -r * 1.05); q.lineTo(r * .45, -r * .55); q.closePath(); q.fill();
-    shade(q, r * 1.2, r * .75);
-    q.strokeStyle = 'rgba(0,0,0,.22)'; q.lineWidth = 1.2;
-    for (let i = -2; i <= 2; i++) { q.beginPath(); q.arc(i * r * .4 - r * .1, 0, r * .32, -.9, .9); q.stroke(); }
+    q.shadowBlur = 0;
+    scaleTex(q, pal, r * 1.25, r * .72);
     q.strokeStyle = 'rgba(255,255,255,.5)'; q.lineWidth = 2;
     q.beginPath(); q.moveTo(r * 1.25, r * .1); q.quadraticCurveTo(r * 1.7, r * .3, r * 1.85, r * .05); q.stroke();
+    rimLight(q, r * 1.2, r * .7);
     outlineEllipse(q, r * 1.3, r * .75);
   } else {
     const ry = sp.id === 'angelfish' ? r * 1.0 : r * 0.8;
-    q.beginPath(); q.ellipse(0, 0, r * 1.2, ry, 0, 0, 7); q.fill();
-    q.shadowBlur = 0;
-    if (sp.id === 'angelfish') {
-      q.globalAlpha = .8;
+    if (sp.id === 'angelfish') {                                                // fins behind body
+      q.fillStyle = pal.dark; q.globalAlpha = .85;
       q.beginPath(); q.moveTo(-r * .3, -ry * .9); q.quadraticCurveTo(0, -ry * 1.5, r * .4, -ry * .85); q.fill();
       q.beginPath(); q.moveTo(-r * .3, ry * .9); q.quadraticCurveTo(0, ry * 1.5, r * .4, ry * .85); q.fill();
       q.globalAlpha = 1;
     }
+    q.fillStyle = bodyGrad(q, pal, r * 1.05, ry);
+    q.beginPath(); q.ellipse(0, 0, r * 1.2, ry, 0, 0, 7); q.fill();
+    q.shadowBlur = 0;
+    scaleTex(q, pal, r * 1.15, ry * .92);
     if (sp.id === 'clownfish' || sp.id === 'goldclown') {
       q.fillStyle = 'rgba(255,255,255,.85)';
       q.fillRect(-r * .15, -ry, r * .25, ry * 2); q.fillRect(r * .5, -ry * .8, r * .2, ry * 1.6);
-      q.strokeStyle = 'rgba(0,0,0,.4)'; q.lineWidth = 1;
+      q.strokeStyle = 'rgba(0,0,10,.4)'; q.lineWidth = 1;
       q.strokeRect(-r * .15, -ry, r * .25, ry * 2);
     }
     if (sp.id === 'lionfish') {
       q.strokeStyle = 'rgba(120,20,20,.6)'; q.lineWidth = 2;
       for (let i = -2; i <= 2; i++) { q.beginPath(); q.moveTo(i * r * .35, -ry); q.lineTo(i * r * .35 - r * .2, ry); q.stroke(); }
-      q.strokeStyle = col; q.lineWidth = 1.5; q.globalAlpha = .7;
+      q.strokeStyle = pal.base; q.lineWidth = 1.5; q.globalAlpha = .7;
       for (let i = 0; i < 6; i++) { const a = -Math.PI / 2 + (i - 2.5) * .3;
         q.beginPath(); q.moveTo(0, -ry * .6); q.lineTo(Math.cos(a) * r * 1.1, -ry * .6 + Math.sin(a) * r * 1.1); q.stroke(); }
       q.globalAlpha = 1;
     }
-    shade(q, r * 1.05, ry);
-    q.fillStyle = col; q.globalAlpha = .55;
+    q.fillStyle = pal.base; q.globalAlpha = .55;                                // pectoral fin
     q.beginPath(); q.ellipse(-r * .05, ry * .35, r * .38, ry * .25, .5, 0, 7); q.fill(); q.globalAlpha = 1;
+    rimLight(q, r * 1.1, ry * .9);
     outlineEllipse(q, r * 1.2, ry);
   }
-  q.shadowBlur = 0; q.fillStyle = '#071021';
-  q.beginPath(); q.arc(r * 0.68, -r * 0.18, Math.max(1.6, r * 0.1), 0, 7); q.fill();
-  q.fillStyle = 'rgba(255,255,255,.9)';
-  q.beginPath(); q.arc(r * 0.70, -r * 0.21, Math.max(.7, r * 0.04), 0, 7); q.fill();
+  // eye socket + eye + glint
+  q.shadowBlur = 0;
+  q.fillStyle = 'rgba(255,255,255,.7)';
+  q.beginPath(); q.arc(r * 0.68, -r * 0.18, Math.max(2.4, r * 0.15), 0, 7); q.fill();
+  q.fillStyle = '#071021';
+  q.beginPath(); q.arc(r * 0.70, -r * 0.18, Math.max(1.6, r * 0.1), 0, 7); q.fill();
+  q.fillStyle = 'rgba(255,255,255,.95)';
+  q.beginPath(); q.arc(r * 0.72, -r * 0.22, Math.max(.7, r * 0.04), 0, 7); q.fill();
 }
 bakeAll();
 
-// bullet sprite: glowing shell, drawn rotated to velocity
-const BULLET_SPR = (() => {
-  const c = document.createElement('canvas'); c.width = 64; c.height = 32;
-  const q = c.getContext('2d'); q.scale(2, 2); q.translate(16, 8);
-  q.shadowColor = '#fbbf24'; q.shadowBlur = 8;
-  const gr = q.createLinearGradient(-9, 0, 9, 0);
-  gr.addColorStop(0, '#b45309'); gr.addColorStop(.45, '#fbbf24'); gr.addColorStop(1, '#fff7d6');
+// bullet sprites: 2 weapon families × 3 cannon levels (the original's
+// _bulletPrefabs[level] + SwapWeapon() system). Level follows bet tier,
+// family follows the 🔫 weapon button.
+const BULLET_COLORS = [
+  { core: '#bfdbfe', mid: '#60a5fa', dark: '#1d4ed8' },   // Lv1 blue
+  { core: '#ede9fe', mid: '#a78bfa', dark: '#6d28d9' },   // Lv2 violet
+  { core: '#fff7d6', mid: '#fbbf24', dark: '#b45309' },   // Lv3 gold
+];
+function bakeBullet(fam, lvl) {
+  const C = BULLET_COLORS[lvl];
+  const c = document.createElement('canvas'); c.width = 72; c.height = 36;
+  const q = c.getContext('2d'); q.scale(2, 2); q.translate(18, 9);
+  q.shadowColor = C.mid; q.shadowBlur = 8;
+  // cylindrical body gradient (3D tube)
+  const gr = q.createLinearGradient(0, -5, 0, 5);
+  gr.addColorStop(0, C.core); gr.addColorStop(.45, C.mid); gr.addColorStop(1, C.dark);
   q.fillStyle = gr;
-  q.beginPath(); q.moveTo(9, 0); q.quadraticCurveTo(7, -4, 0, -4); q.lineTo(-7, -4);
-  q.quadraticCurveTo(-10, 0, -7, 4); q.lineTo(0, 4); q.quadraticCurveTo(7, 4, 9, 0); q.closePath(); q.fill();
-  q.shadowBlur = 0; q.fillStyle = 'rgba(255,255,255,.8)';
-  q.beginPath(); q.ellipse(2, -1.4, 4, 1.2, 0, 0, 7); q.fill();
-  q.fillStyle = '#92400e';
-  q.beginPath(); q.moveTo(-7, -4); q.lineTo(-11, -6); q.lineTo(-9, 0); q.lineTo(-11, 6); q.lineTo(-7, 4); q.closePath(); q.fill();
+  if (fam === 0) {                                    // SHELL: round-nose cartridge
+    q.beginPath(); q.moveTo(10, 0); q.quadraticCurveTo(8, -4.5, 1, -4.5); q.lineTo(-8, -4.5);
+    q.quadraticCurveTo(-11, 0, -8, 4.5); q.lineTo(1, 4.5); q.quadraticCurveTo(8, 4.5, 10, 0); q.closePath(); q.fill();
+    q.shadowBlur = 0;
+    q.fillStyle = C.dark;                             // casing band + fins
+    q.fillRect(-6, -4.5, 2, 9);
+    q.beginPath(); q.moveTo(-8, -4.5); q.lineTo(-12, -6.5); q.lineTo(-10, 0); q.lineTo(-12, 6.5); q.lineTo(-8, 4.5); q.closePath(); q.fill();
+  } else {                                            // TORPEDO: pointed dart
+    q.beginPath(); q.moveTo(13, 0); q.lineTo(2, -3.6); q.lineTo(-9, -3.2);
+    q.lineTo(-9, 3.2); q.lineTo(2, 3.6); q.closePath(); q.fill();
+    q.shadowBlur = 0;
+    q.fillStyle = C.dark;                             // twin fins + exhaust nub
+    q.beginPath(); q.moveTo(-7, -3.2); q.lineTo(-13, -7); q.lineTo(-9, -1); q.closePath(); q.fill();
+    q.beginPath(); q.moveTo(-7, 3.2); q.lineTo(-13, 7); q.lineTo(-9, 1); q.closePath(); q.fill();
+    q.fillStyle = C.core; q.globalAlpha = .9;
+    q.beginPath(); q.ellipse(-10, 0, 2.4, 1.6, 0, 0, 7); q.fill(); q.globalAlpha = 1;
+  }
+  // specular streak
+  q.fillStyle = 'rgba(255,255,255,.8)';
+  q.beginPath(); q.ellipse(2, -2, 5, 1.1, 0, 0, 7); q.fill();
   return c;
-})();
+}
+const BULLET_SPRS = [0, 1].map(f => [0, 1, 2].map(l => bakeBullet(f, l)));
+let weaponFam = 0;
+$('weapon').onclick = function () {
+  weaponFam = (weaponFam + 1) % 2;
+  this.textContent = '🔫 weapon ' + (weaponFam ? 'B' : 'A');
+};
 
 // seabed + kelp bake (foreground 2D layer)
 const SEABED = document.createElement('canvas'); SEABED.width = GW; SEABED.height = 110;
@@ -757,9 +846,10 @@ function fireBullet(angle) {
   if (bullets.length >= MAX_BULLETS) return;
   sim.wagerShot();
   const a = angle ?? CANNON.angle;
+  const lvl = sim.bet < 300 ? 0 : sim.bet < 500 ? 1 : 2;
   bullets.push({ x: CANNON.x + Math.cos(a) * 24, y: CANNON.y + Math.sin(a) * 24, px: CANNON.x, py: CANNON.y,
     vx: Math.cos(a) * BULLET_SPEED, vy: Math.sin(a) * BULLET_SPEED, bet: sim.bet, bounces: 0,
-    homing: aimLockOn });
+    homing: aimLockOn, lvl, spr: BULLET_SPRS[weaponFam][lvl] });
   CANNON.recoil = 1; CANNON.flash = 1;
   SFX.shoot();
 }
@@ -962,6 +1052,15 @@ function draw(now, k) {
     g.globalAlpha = d.alpha; drawFishSprite(d); g.globalAlpha = 1; return true;
   });
 
+  // soft contact shadows under the school — cheap trick that sells the depth
+  g.fillStyle = 'rgba(0,0,12,.20)';
+  for (const v of view.values()) if (v.t >= 0) {
+    const z = v.z || 1, r = fishRadius(v.f) * z;
+    g.globalAlpha = .12 + .12 * z;
+    g.beginPath(); g.ellipse(v.x, Math.min(v.y + r * 2.1, GH - 10), r * 1.05, r * .22, 0, 0, 7); g.fill();
+  }
+  g.globalAlpha = 1;
+
   // depth-sorted school: far layer first
   for (const zPass of Z_LAYERS)
     for (const v of view.values())
@@ -1008,13 +1107,16 @@ function draw(now, k) {
     return true;
   });
 
-  // bullets: faded trail + sprite rotated to velocity
-  g.strokeStyle = 'rgba(251,191,36,.3)'; g.lineWidth = 2; g.beginPath();
-  for (const b of bullets) { g.moveTo(b.px, b.py); g.lineTo(b.x, b.y); }
-  g.stroke();
+  // bullets: per-level trail colors (3 batched passes) + sprite rotated to velocity
+  const TRAIL = ['rgba(96,165,250,.3)', 'rgba(167,139,250,.3)', 'rgba(251,191,36,.3)'];
+  for (let lv = 0; lv < 3; lv++) {
+    g.strokeStyle = TRAIL[lv]; g.lineWidth = 2; g.beginPath();
+    for (const b of bullets) if (b.lvl === lv) { g.moveTo(b.px, b.py); g.lineTo(b.x, b.y); }
+    g.stroke();
+  }
   for (const b of bullets) {
     g.save(); g.translate(b.x, b.y); g.rotate(Math.atan2(b.vy, b.vx));
-    g.drawImage(BULLET_SPR, -16, -8, 32, 16);
+    g.drawImage(b.spr, -18, -9, 36, 18);
     g.restore();
   }
 
@@ -1063,28 +1165,46 @@ function draw(now, k) {
 
 function drawCannon(now, k) {
   const lvl = sim.bet < 300 ? 1 : sim.bet < 500 ? 2 : 3;
-  const colors = { 1: '#60a5fa', 2: '#a78bfa', 3: '#fbbf24' };
-  const len = 28 + lvl * 5, wid = 7 + lvl * 2;
+  const C = BULLET_COLORS[lvl - 1];
+  const len = 28 + lvl * 5, wid = 8 + lvl * 2;
   CANNON.recoil = Math.max(0, CANNON.recoil - 0.12 * k);
   CANNON.flash = Math.max(0, CANNON.flash - 0.18 * k);
   const off = -CANNON.recoil * 6;
-  g.fillStyle = '#0e1830';
-  g.beginPath(); g.ellipse(CANNON.x, CANNON.y + 8, 30, 9, 0, Math.PI, 0); g.fill();
+  // ground shadow + base plate (stacked ellipses → pedestal)
+  g.fillStyle = 'rgba(0,0,12,.35)';
+  g.beginPath(); g.ellipse(CANNON.x, CANNON.y + 10, 34, 8, 0, 0, 7); g.fill();
+  const plate = g.createLinearGradient(0, CANNON.y - 2, 0, CANNON.y + 12);
+  plate.addColorStop(0, '#2a3a60'); plate.addColorStop(1, '#0c1428');
+  g.fillStyle = plate;
+  g.beginPath(); g.ellipse(CANNON.x, CANNON.y + 6, 28, 8, 0, 0, 7); g.fill();
+  g.beginPath(); g.ellipse(CANNON.x, CANNON.y + 2, 22, 6, 0, 0, 7); g.fill();
+  // barrel: cylindrical gradient across its width + muzzle ring
   g.save(); g.translate(CANNON.x, CANNON.y); g.rotate(CANNON.angle);
   if (CANNON.flash > 0) {
     g.globalAlpha = CANNON.flash; g.fillStyle = '#fff7d6';
     g.beginPath(); g.arc(len + 6, 0, 7 + CANNON.flash * 6, 0, 7); g.fill(); g.globalAlpha = 1;
   }
-  g.fillStyle = colors[lvl];
+  const tube = g.createLinearGradient(0, -wid / 2, 0, wid / 2);
+  tube.addColorStop(0, C.core); tube.addColorStop(.4, C.mid); tube.addColorStop(1, C.dark);
+  g.fillStyle = tube;
   g.fillRect(off, -wid / 2, len, wid);
-  g.fillStyle = 'rgba(255,255,255,.25)';
-  g.fillRect(off, -wid / 2, len, wid * .35);
-  if (lvl === 3) { g.fillStyle = colors[3]; g.fillRect(off, -wid / 2 - 4, len * .8, 3); g.fillRect(off, wid / 2 + 1, len * .8, 3); }
+  g.fillStyle = C.dark;                                  // muzzle ring (open bore)
+  g.fillRect(off + len - 3, -wid / 2 - 1.5, 4, wid + 3);
+  g.fillStyle = C.core;
+  g.fillRect(off + len - 2, -wid / 2 + 1.5, 2, wid - 3);
+  if (lvl === 3) { g.fillStyle = tube; g.fillRect(off, -wid / 2 - 4, len * .8, 3); g.fillRect(off, wid / 2 + 1, len * .8, 3); }
   g.restore();
-  g.fillStyle = '#1c2a4f'; g.beginPath(); g.arc(CANNON.x, CANNON.y, 13 + lvl, 0, 7); g.fill();
-  g.strokeStyle = colors[lvl]; g.lineWidth = 2; g.stroke();
+  // turret dome: radial gradient sphere with level-colored band
+  const dome = g.createRadialGradient(CANNON.x - 5, CANNON.y - 7, 3, CANNON.x, CANNON.y, 16 + lvl);
+  dome.addColorStop(0, '#43598c'); dome.addColorStop(.6, '#1c2a4f'); dome.addColorStop(1, '#0b1226');
+  g.fillStyle = dome;
+  g.beginPath(); g.arc(CANNON.x, CANNON.y, 13 + lvl, 0, 7); g.fill();
+  g.strokeStyle = C.mid; g.lineWidth = 2;
+  g.beginPath(); g.arc(CANNON.x, CANNON.y, 13 + lvl, 0, 7); g.stroke();
+  g.fillStyle = C.core;
+  g.beginPath(); g.arc(CANNON.x - 4, CANNON.y - 5, 2.5, 0, 7); g.fill(); // dome glint
   g.fillStyle = '#cdd7ee'; g.font = '11px monospace'; g.textAlign = 'center';
-  g.fillText('bet ' + sim.bet + ' · Lv' + lvl, CANNON.x, CANNON.y - 24 - lvl);
+  g.fillText('bet ' + sim.bet + ' · Lv' + lvl, CANNON.x, CANNON.y - 26 - lvl);
 }
 
 function drawCoin(x, y, now, ph) {
@@ -1097,7 +1217,7 @@ function drawFishSprite(v) {
   const f = v.f, spr = SPRITES[f.sp.id], z = v.z || 1;
   const ang = v.dir ?? 0;
   const wob = Math.sin(performance.now() / 1000 * 4 + (v.wig || 0)) * 0.07;
-  const frame = spr.frames[((performance.now() / 130 + (v.wig || 0) * 9) | 0) % 4];
+  const frame = spr.frames[((performance.now() / 110 + (v.wig || 0) * 9) | 0) % 6];
   g.save(); g.translate(v.x, v.y); g.rotate(ang + wob);
   if (Math.cos(ang) < 0) g.scale(1, -1);
   g.globalAlpha *= (0.55 + 0.45 * z);                          // depth dimming
