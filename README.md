@@ -21,7 +21,7 @@ An OceanKing-style fish-shooter casino game replicated **in pure numbers** — p
 ## Files
 
 - `sim-core.js` — the money engine. Wager at fire time, CSPRNG-style roll at contact time, per-feature RTP buckets. Runs in browser and node.
-- `index.html` — number panels + canvas mini-game (pure view layer; deleting it wouldn't change a cent).
+- `index.html` — number panels + mini-game rendered through a WebGL shader pipeline (procedural caustics/god-rays water, shockwave refraction, chromatic aberration on big wins, bloom) with graceful 2D fallback on context loss. Pure view layer; deleting it wouldn't change a cent.
 
 ## Verify the math yourself
 
