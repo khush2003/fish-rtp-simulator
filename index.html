@@ -362,16 +362,17 @@ function swapTo2D() {
       vec4 game = texture2D(uGame, guv);
       vec3 col = bg*(1.0-game.a) + game.rgb;
 
-      // cheap threshold bloom (8 taps)
-      vec2 px = 1.0/uRes;
+      // tight halo glow: 4 taps at 2px only — offsets this small hug the
+      // sprite edge (sparse taps at large offsets create ghost copies!)
+      vec2 px = 2.0/uRes;
       vec3 glow = vec3(0.0);
-      for (int i=0;i<4;i++){
-        vec2 o = vec2(float(i-1)*2.0-1.0, float(i)*1.5-2.0)*px*4.0;
-        vec4 t1 = texture2D(uGame, clamp(guv+o,0.0,1.0));
-        vec4 t2 = texture2D(uGame, clamp(guv-o,0.0,1.0));
-        glow += max(t1.rgb-0.5,0.0) + max(t2.rgb-0.5,0.0);
-      }
-      col += glow*(0.16 + uWin*0.5);   // big wins boost the bloom — glow, never ghosts
+      glow += max(texture2D(uGame, guv+vec2(px.x,0.)).rgb-0.55, 0.0);
+      glow += max(texture2D(uGame, guv-vec2(px.x,0.)).rgb-0.55, 0.0);
+      glow += max(texture2D(uGame, guv+vec2(0.,px.y)).rgb-0.55, 0.0);
+      glow += max(texture2D(uGame, guv-vec2(0.,px.y)).rgb-0.55, 0.0);
+      col += glow*0.15;
+      // win pulse: pure self-brightness lift — zero offset, can never duplicate
+      col += game.rgb*uWin*0.35;
 
       // vignette
       col *= smoothstep(1.3, 0.42, length(uv-0.5)*1.62);
@@ -412,6 +413,7 @@ function swapTo2D() {
 function setupGL() { window.__setupGL(); }
 
 window.__rtpDebug = () => ({ glok: GLOK, err: GLOK ? gl.getError() : -1, hasFallback: !!fctx });
+window.__rtpForceWin = () => { winPulse = 1; };   // test hook: max win-pulse to verify no ghosting
 const STAGE_TINT_GL = { NORMAL: [0, 0, 0], BOSS: [0.045, 0.004, 0.02], BONUS: [0.05, 0.038, 0.0] };
 const shockArr = new Float32Array(12);
 function present(now) {
@@ -778,7 +780,8 @@ function bezD(P, t) {
 function syncView() {
   const live = new Set(sim.fish.map(f => f.uid));
   for (const [uid, v] of view) if (!live.has(uid)) {
-    dying.push({ ...v, alpha: 1, flash: 1 });
+    // corpse copy: no HP bar (a faded fish WITH a bar reads as a ghost twin)
+    dying.push({ ...v, alpha: 1, flash: 1, theater: undefined });
     view.delete(uid);
     if (lockUid === uid) lockUid = null;
   }
@@ -1102,7 +1105,7 @@ function draw(now, k) {
   if (flash > 0) { g.fillStyle = `rgba(251,191,36,${flash * 0.25})`; g.fillRect(-20, -20, GW + 40, GH + 40); flash -= 0.05 * k; }
 
   compact(dying, d => {
-    d.alpha -= 0.05 * k; if (d.alpha <= 0) return false;
+    d.alpha -= 0.085 * k; if (d.alpha <= 0) return false;   // quick fade — corpses, not ghosts
     d.y += 0.8 * k; d.dir = (d.dir || 0) + 0.04 * k;
     if (d.flash > 0) d.flash -= 0.1 * k;
     g.globalAlpha = d.alpha; drawFishSprite(d); g.globalAlpha = 1; return true;
