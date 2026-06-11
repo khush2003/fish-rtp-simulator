@@ -34,6 +34,12 @@ const SPECIES = [
 const BOSS_MULT = { values: [1, 2, 3, 4, 5], weights: [50, 25, 15, 7, 3] };
 const BOSS_EMULT = BOSS_MULT.values.reduce((s, v, i) => s + v * BOSS_MULT.weights[i], 0) / 100; // 1.88
 
+// GOLDEN KILL multiplier — every normal-fish kill rolls a bonus multiplier.
+// Its mean is priced into the kill chance (p = RTP / (M × E)), so it adds
+// pure volatility/excitement at exactly zero RTP cost.
+const KILL_MULT = { values: [1, 2, 3, 5, 10], weights: [85, 10, 3, 1.5, 0.5] };
+const KILL_EMULT = KILL_MULT.values.reduce((s, v, i) => s + v * KILL_MULT.weights[i], 0) / 100; // 1.265
+
 // Stage cycle (shot-based instead of the original's 180s timers — same idea)
 const STAGES = [
   { name: 'NORMAL', shots: 300 },
@@ -51,6 +57,9 @@ function weightedPick(rng, entries, weightOf) {
 
 function rollMult(rng) {
   return weightedPick(rng, BOSS_MULT.values.map((v, i) => ({ v, w: BOSS_MULT.weights[i] })), e => e.w).v;
+}
+function rollKillMult(rng) {
+  return weightedPick(rng, KILL_MULT.values.map((v, i) => ({ v, w: KILL_MULT.weights[i] })), e => e.w).v;
 }
 
 class Sim {
@@ -80,7 +89,7 @@ class Sim {
   effectiveM(f) {
     if (f.sp.kind === 'chain') return f.sp.M; // chained value computed at snapshot time
     if (f.sp.kind === 'crab') return 0;
-    return f.sp.M * (f.sp.kind === 'boss' ? BOSS_EMULT : 1);
+    return f.sp.M * (f.sp.kind === 'boss' ? BOSS_EMULT : KILL_EMULT);
   }
 
   // p shown in the fish table — what one shot at this fish rolls right now
@@ -88,7 +97,7 @@ class Sim {
     if (f.sp.kind === 'chain') return Math.min(P_CAP, RTP / this.chainSnapshotM(f));
     if (f.sp.kind === 'crab')  return Math.min(P_CAP, RTP / this.hammerSnapshotM());
     if (f.sp.kind === 'boss')  return Math.min(P_CAP, RTP / (f.sp.M * BOSS_EMULT));
-    return Math.min(P_CAP, RTP / f.sp.M);
+    return Math.min(P_CAP, RTP / (f.sp.M * KILL_EMULT));   // golden-kill mean priced in
   }
 
   chainSnapshotM(f) {
@@ -206,7 +215,9 @@ class Sim {
   // The server answer to "bullet touched fish <uid> on a shot that wagered `bet`"
   resolveContact(uid, bet = this.bet) {
     const f = this.fish.find(o => o.uid === uid);
-    if (!f) return this.resolveMiss();
+    // contact raced a despawn (chain/hammer/stage wipe in the same tick):
+    // VOID the round and refund — a server must never eat a bet without a roll
+    if (!f) return this.refundShot(bet);
     const entry = { type: 'shot' };
     const p = this.pFor(f);
     const roll = this.rng();
@@ -214,8 +225,10 @@ class Sim {
 
     if (roll < p) {
       if (f.sp.kind === 'normal') {
-        this.win(f.sp.M * bet, 'base', entry);
-        entry.detail = `M=${f.sp.M}`;
+        const mult = rollKillMult(this.rng);          // golden kill, rolled server-side
+        this.win(f.sp.M * mult * bet, 'base', entry);
+        entry.mult = mult;
+        entry.detail = mult > 1 ? `M=${f.sp.M} × GOLDEN ${mult}x` : `M=${f.sp.M}`;
         entry.killedUids = [f.uid];
         this.fish = this.fish.filter(o => o.uid !== f.uid);
       } else if (f.sp.kind === 'chain') {
@@ -259,6 +272,6 @@ class Sim {
   expectedRtp() { return RTP * (1 - this.missProb); }
 }
 
-const SimCore = { Sim, SPECIES, RTP, P_CAP, MIN_PRIZE_M, BAND_LOW, BAND_HIGH, FEATURE_GUARD, BOSS_EMULT, STAGES };
+const SimCore = { Sim, SPECIES, RTP, P_CAP, MIN_PRIZE_M, BAND_LOW, BAND_HIGH, FEATURE_GUARD, BOSS_EMULT, KILL_MULT, KILL_EMULT, STAGES };
 if (typeof module !== 'undefined') module.exports = SimCore;
 if (typeof window !== 'undefined') window.SimCore = SimCore;

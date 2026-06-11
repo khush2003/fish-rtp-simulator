@@ -132,7 +132,8 @@
     </div>
     <div class="panel">
       <h2>How each feature is priced</h2>
-      <div class="logline">NORMAL FISH → p = 0.96 / M</div>
+      <div class="logline">NORMAL FISH → p = 0.96 / (M × 1.265) — every kill rolls a GOLDEN multiplier ✨ 1x:85% 2x:10% 3x:3% 5x:1.5% 10x:0.5% (mean 1.265, priced in → zero RTP cost, pure volatility)</div>
+      <div class="logline">CONTACT RACING A DESPAWN → round VOIDED, bet refunded (a server never eats a bet without a roll)</div>
       <div class="logline">CHAIN (gold clown) → prize = Σ(M of self + all clownfish) snapshot at roll; p = 0.96 / ΣM</div>
       <div class="logline">HAMMER CRAB → prize = 3 × Σ(screen M) snapshot; p = 0.96 / prizeM. The 3 wipes are payout animation. Bosses immune.</div>
       <div class="logline">BOSS dragon → multiplier 1–5x rolled FOR REAL (E=1.88); p = 0.96 / (200 × 1.88)</div>
@@ -1176,11 +1177,17 @@ function step(now, dt) {
             celebrate(e.payout, b.bet, v.x, v.y);
             addShock(v.x, v.y, .7);
           } else {
-            burst(v.x, v.y, fishColor(v.f), v.f.sp.M >= 18);
-            spawnCoins(v.x, v.y, v.f.sp.M);
+            burst(v.x, v.y, fishColor(v.f), v.f.sp.M >= 18 || e.mult > 1);
+            spawnCoins(v.x, v.y, v.f.sp.M * (e.mult || 1));
+            if (e.mult > 1) {                          // GOLDEN KILL flourish
+              pop(v.x, v.y - fishRadius(v.f) - 14, '✨ GOLDEN ×' + e.mult, '#fbbf24', { a: 1.6, big: e.mult >= 5 });
+              shake = Math.max(shake, .3 + e.mult * .05);
+            }
             celebrate(e.payout, b.bet, v.x, v.y);
-            if (v.f.sp.M >= 18) addShock(v.x, v.y, .5);
+            if (v.f.sp.M >= 18 || e.mult >= 5) addShock(v.x, v.y, .5);
           }
+        } else if (e.result && e.result.startsWith('REFUND')) {
+          pop(b.x, b.y, 'VOID · REFUND', '#60a5fa', { small: true });   // contact raced a despawn
         } else {
           v.theater = Math.max(0.06, v.theater - (0.15 + Math.random() * 0.3));
           v.flash = 1;
