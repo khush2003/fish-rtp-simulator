@@ -492,7 +492,7 @@ function flowAt(now) { return Math.sin(now / 5200) * .7 + Math.sin(now / 2300 + 
 
 function fishRadius(f) {
   const m = f.sp.kind === 'boss' ? 80 : f.sp.kind === 'crab' ? 20 : f.sp.M;
-  return 11 + Math.sqrt(m) * 2.4;
+  return 9 + Math.sqrt(m) * 2.1;     // smaller fish → denser screens read like the original
 }
 // 3-tone palette per species → baked radial-gradient "volume" shading
 const PAL = (() => {
@@ -803,15 +803,19 @@ function syncView() {
       continue;
     }
     const inBonus = sim.stage().name === 'BONUS';
-    if (group.length >= 3 && sp.kind === 'normal' && inBonus && Math.random() < .5) {
+    if (group.length >= 4 && sp.kind === 'normal' && inBonus && Math.random() < .5) {
       const cP = newPath(null, sp); cP.dur = cP.dur * 1.6 / z;
       const R = (60 + Math.random() * 40) * z;
       group.forEach((f, i) => view.set(f.uid, { f, theater: 1, mode: 'circle', cP, R, flash: 0, z,
         a0: i / group.length * Math.PI * 2, revs: 2 + Math.random() * 1.5, t: 0, wig: Math.random() * 7 }));
-    } else if (group.length >= 3 && sp.kind === 'normal' && Math.random() < .65) {
+    } else if (group.length >= 3 && sp.kind === 'normal') {
+      // school → single-file TRAIN, evenly spaced on one shared path (the
+      // original's signature look: snaking queues of identical fish)
       const P = newPath(null, sp); P.dur /= z;
+      // time-based spacing: ~0.7s between train members regardless of path length
+      const gap = Math.min(700 / P.dur, 0.4 / group.length);
       group.forEach((f, i) => view.set(f.uid, { ...P, f, theater: 1, mode: 'bez', flash: 0, z,
-        t: -i * 0.055, lat: (i % 2 ? 1 : -1) * (6 + i * 3), wig: Math.random() * 7 }));
+        t: -i * gap, lat: (i % 2 ? 1 : -1) * 2.5, wig: Math.random() * 7 }));
     } else {
       for (const f of group) {
         const P = newPath(null, sp); P.dur /= z;
@@ -1294,13 +1298,16 @@ function drawFishSprite(v) {
     g.globalAlpha = 1;
   }
   const tag = f.sp.kind === 'chain' ? '⚡' + f.sp.M : f.sp.kind === 'crab' ? '🔨' : f.sp.kind === 'boss' ? '👑200' : f.sp.M + 'x';
-  g.font = `bold ${Math.max(10, r * 0.5)}px monospace`; g.textAlign = 'center';
-  g.lineWidth = 3; g.strokeStyle = '#071021'; g.strokeText(tag, sx, sy + 4);
-  g.fillStyle = '#fff'; g.fillText(tag, sx, sy + 4);
-  if (v.theater !== undefined && f.sp.kind !== 'crab') {
-    g.fillStyle = '#1a2440'; g.fillRect(sx - r, sy - r - 11, r * 2, 4);
+  g.globalAlpha = .9;
+  g.font = `bold ${Math.max(9, r * 0.42)}px monospace`; g.textAlign = 'center';
+  g.lineWidth = 3; g.strokeStyle = '#071021'; g.strokeText(tag, sx, sy + 3);
+  g.fillStyle = '#fff'; g.fillText(tag, sx, sy + 3);
+  g.globalAlpha = 1;
+  // HP bar only once the fish has been hit — the original shows nothing until damage
+  if (v.theater !== undefined && v.theater < 1 && f.sp.kind !== 'crab') {
+    g.fillStyle = '#1a2440'; g.fillRect(sx - r, sy - r - 10, r * 2, 3.5);
     g.fillStyle = v.theater > 0.4 ? '#4ade80' : '#f87171';
-    g.fillRect(sx - r, sy - r - 11, r * 2 * v.theater, 4);
+    g.fillRect(sx - r, sy - r - 10, r * 2 * v.theater, 3.5);
   }
 }
 

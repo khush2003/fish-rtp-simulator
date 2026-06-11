@@ -5,8 +5,8 @@
 const RTP = 0.96;
 const P_CAP = 0.95;          // never let a single fish be a near-coinflip jackpot
 const MIN_PRIZE_M = 10;      // variable-prize floor: feature never priced below 10x
-const BAND_LOW = 80;         // director keeps sum(M) on screen >= this
-const BAND_HIGH = 150;       // ...and stops spawning above this
+const BAND_LOW = 160;        // director keeps sum(M) on screen >= this (dense, like the original's 20-per-spawner screens)
+const BAND_HIGH = 260;       // ...and stops spawning above this
 const FEATURE_GUARD = 60;    // chain/crab fish only spawn while screen value >= this
 
 // Species table. M = payout multiplier. Ranking mirrors the original game's
@@ -106,7 +106,7 @@ class Sim {
   director() {
     const st = this.stage().name.toLowerCase();
     let guard = 64; // safety
-    while (this.screenValue() < BAND_LOW && guard-- > 0) {
+    while (this.screenValue() < BAND_LOW && this.fish.length < 55 && guard-- > 0) {
       const eligible = SPECIES.filter(sp => {
         if ((sp.w[st] || 0) <= 0) return false;
         if ((sp.kind === 'chain' || sp.kind === 'crab') && this.screenValue() < FEATURE_GUARD) return false;
@@ -115,7 +115,11 @@ class Sim {
       });
       const sp = weightedPick(this.rng, eligible, e => e.w[st] || 0);
       if (!sp) break;
-      this.fish.push({ uid: ++this.uid, sp });
+      // schools: fodder arrives 5-12 at a time, mid fish sometimes in trios —
+      // the original's wave-pattern spawners. Pure feel; every fish self-prices.
+      const school = sp.kind === 'normal' && sp.M <= 5 ? 5 + Math.floor(this.rng() * 8)
+                   : sp.kind === 'normal' && sp.M <= 12 && this.rng() < 0.4 ? 3 : 1;
+      for (let i = 0; i < school; i++) this.fish.push({ uid: ++this.uid, sp });
     }
   }
 
