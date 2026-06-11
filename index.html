@@ -39,20 +39,21 @@
 <div class="sub">Play the canvas below (aim with mouse, click/hold to fire) or use the turbo buttons. Either way it's the SAME money engine — aiming changes <b>volatility, never RTP</b>.</div>
 
 <div class="panel" style="margin-bottom:12px">
-  <h2>Mini gameplay — same math, now visible <span class="dim">(movement replicates the original: Bezier paths, fish trains, circle formations, boss choreography)</span></h2>
-  <canvas id="game" width="1280" height="380" style="width:100%;height:auto;display:block;background:#071021;border-radius:6px;cursor:crosshair"></canvas>
+  <h2>Mini gameplay — same math, now visible <span class="dim">(movement, formations &amp; choreography replicate the original Unity game)</span></h2>
+  <canvas id="game" width="1280" height="420" style="width:100%;height:auto;display:block;background:#071021;border-radius:6px;cursor:crosshair"></canvas>
   <div style="margin-top:6px">
-    <span class="dim" style="font-size:11px">TRY THE FEATURES → </span>
-    <button id="spawnChain">⚡ spawn chain school</button>
-    <button id="spawnCrab">🔨 spawn hammer crab</button>
-    <button id="spawnBoss">👑 spawn boss</button>
+    <span class="dim" style="font-size:11px">TRY → </span>
+    <button id="spawnChain">⚡ chain school</button>
+    <button id="spawnCrab">🔨 hammer crab</button>
+    <button id="spawnBoss">👑 boss</button>
+    <button id="aimLock">🎯 aim-lock</button>
+    <button id="stress">💥 stress: 300 bullets</button>
     <span class="dim" style="font-size:11px">(spawning anything never changes RTP — every fish self-prices)</span>
   </div>
   <div class="dim" style="font-size:11px;margin-top:4px">
-    bullets <b>bounce until they hit</b> (the original's design: P(contact)=1 → delivered RTP = target);
-    a stuck bullet is VOIDED with a refund, never eaten ·
-    HP bars are <b>theater</b> — they drain on failed rolls but the kill was always a single probability ·
-    fish size = multiplier · per-species speeds from the original FishSO data
+    bullets <b>bounce until they hit</b> (P(contact)=1 → delivered RTP = target); stuck bullets are VOIDED with a refund ·
+    HP bars are <b>theater</b> · fish size = multiplier · per-species speeds &amp; sprite-frame animation like the original FishSO data ·
+    aim-lock = the original's auto-target with homing bullets &amp; dotted lock-line
   </div>
 </div>
 
@@ -237,61 +238,45 @@ render();
 
 // ============================================================
 // VISUAL MINI-GAME — pure view layer over the same Sim.
-// Movement replicates the original Unity game (per the
-// building-fish-shooter-games skill): quadratic Bezier paths with
-// control = midpoint + perpendicular × curveDist, eased traversal
-// (stand-in for the FishSO AnimationCurve), per-species speeds,
-// fish TRAINS (the wave pattern: N fish staggered on one path),
-// CIRCLE formations in the bonus stage, boss entrance + multi-wave
-// death choreography, chain lightning, coin fly, screen shake.
-// Money still happens ONLY in sim.* calls — delete all of this
-// and the RTP wouldn't change by a cent.
+// Replicates the original Unity game's presentation (per the
+// building-fish-shooter-games skill): quadratic Bezier paths,
+// per-species speeds, sprite-FRAME animation (the FishSO
+// FishFrames[] approach — frames are pre-baked offscreen),
+// trains, circle formations, boss choreography, auto-aim with
+// homing bullets + dotted lock-line, cannon visual levels.
+//
+// PERFORMANCE ARCHITECTURE (no lag at 300+ bullets):
+//  • sprite atlas: every species pre-rendered to 4 flap frames
+//    at bake time → runtime is one drawImage per fish
+//  • zero per-frame allocation: entity arrays compacted in
+//    place (no .filter() churn), gradients/overlays cached
+//  • delta-time movement (slow frames don't slow the game)
+//  • adaptive particles: bursts shrink if fps dips
+// Money still happens ONLY in sim.* calls.
 // ============================================================
 const gc = $('game'), g = gc.getContext('2d');
 const GW = gc.width, GH = gc.height;
-const CANNON = { x: GW / 2, y: GH - 14, angle: -Math.PI / 2 };
+const CANNON = { x: GW / 2, y: GH - 16, angle: -Math.PI / 2, recoil: 0, flash: 0 };
 const view = new Map();
-let bullets = [], pops = [], nets = [], dying = [], parts = [], coins = [], arcs = [], bubbles = [];
-let flash = 0, shake = 0, banner = null, cine = null;
-let firing = false, lastFire = 0, lastStage = sim.stage().name;
+const bullets = [], pops = [], nets = [], dying = [], parts = [], coins = [], arcs = [], bubbles = [];
+let flash = 0, shake = 0, banner = null, cine = null, lockUid = null, aimLockOn = false;
+let firing = false, lastFire = 0, lastStage = sim.stage().name, mapIdx = 1;
+let fps = 60, frames = 0, fpsAt = 0;
+const MAX_PARTS = 450, MAX_BULLETS = 600;
+
+// in-place compaction — keeps survivors, zero allocation
+function compact(arr, keep) {
+  let j = 0;
+  for (let i = 0; i < arr.length; i++) if (keep(arr[i])) arr[j++] = arr[i];
+  arr.length = j;
+}
 
 // per-species speed, scaled from the original FishSO assets (bigger = faster)
 const SPEED = { minnow: .55, clownfish: .42, angelfish: .6, puffer: .5, lionfish: .4,
                 turtle: .22, ray: .22, shark: .3, goldclown: .45, powercrab: .6, dragon: .16 };
-const smooth = t => t * t * (3 - 2 * t);   // stands in for the original AnimationCurve easing
+const smooth = t => t * t * (3 - 2 * t);
 
 for (let i = 0; i < 26; i++) bubbles.push({ x: Math.random() * GW, y: Math.random() * GH, r: 1 + Math.random() * 2.5, s: .2 + Math.random() * .5 });
-
-function borderPoint() {
-  const side = Math.floor(Math.random() * 3); // top/left/right (bottom is the cannon's)
-  if (side === 0) return { x: 60 + Math.random() * (GW - 120), y: -40 };
-  if (side === 1) return { x: -40, y: 30 + Math.random() * (GH * 0.7) };
-  return { x: GW + 40, y: 30 + Math.random() * (GH * 0.7) };
-}
-
-// quadratic Bezier exactly like mechanics.md: control = mid + perp × curveDist
-function newPath(from, sp) {
-  const S = from || borderPoint();
-  let E = borderPoint();
-  if (Math.abs(E.x - S.x) + Math.abs(E.y - S.y) < 300) E = { x: GW - S.x, y: Math.random() * GH * 0.7 };
-  const mid = { x: (S.x + E.x) / 2, y: (S.y + E.y) / 2 };
-  const dx = E.x - S.x, dy = E.y - S.y, len = Math.hypot(dx, dy) || 1;
-  const curve = (Math.random() < 0.5 ? -1 : 1) * (90 + Math.random() * 130);
-  const C = { x: mid.x + (-dy / len) * curve, y: mid.y + (dx / len) * curve };
-  const dur = (8000 + Math.random() * 3000) / (SPEED[sp?.id] ?? .45);
-  return { S, C, E, t: 0, dur: Math.min(Math.max(dur, 7000), 42000) };
-}
-
-function bez(P, t) {
-  const u = 1 - t;
-  return { x: u * u * P.S.x + 2 * u * t * P.C.x + t * t * P.E.x,
-           y: u * u * P.S.y + 2 * u * t * P.C.y + t * t * P.E.y };
-}
-function bezD(P, t) { // derivative → orientation, like the original's transform.up = P'(t)
-  const u = 1 - t;
-  return { x: 2 * (u * (P.C.x - P.S.x) + t * (P.E.x - P.C.x)),
-           y: 2 * (u * (P.C.y - P.S.y) + t * (P.E.y - P.C.y)) };
-}
 
 function fishRadius(f) {
   const m = f.sp.kind === 'boss' ? 80 : f.sp.kind === 'crab' ? 20 : f.sp.M;
@@ -305,13 +290,144 @@ function fishColor(f) {
   return `hsl(${hues[f.sp.M] ?? 220} 70% 60%)`;
 }
 
+// ---------- SPRITE BAKERY: each species → 4 pre-rendered flap frames ----------
+const SPRITES = {};
+function bakeAll() {
+  for (const sp of SC.SPECIES) {
+    const fake = { sp };
+    const r = fishRadius(fake), col = fishColor(fake);
+    const W = Math.ceil(r * 4.2), H = Math.ceil(r * 3);
+    const frames = [];
+    for (let k = 0; k < 4; k++) {
+      const c = document.createElement('canvas');
+      c.width = W * 2; c.height = H * 2;
+      const q = c.getContext('2d');
+      q.scale(2, 2); q.translate(W * 0.56, H / 2);
+      drawBody(q, sp, r, col, Math.sin(k / 4 * Math.PI * 2) * r * 0.22);
+      frames.push(c);
+    }
+    SPRITES[sp.id] = { frames, w: W, h: H, ax: W * 0.56, ay: H / 2 };
+  }
+}
+function drawBody(q, sp, r, col, flap) {
+  const glow = sp.kind !== 'normal';
+  if (glow) { q.shadowColor = col; q.shadowBlur = 14; }
+  q.fillStyle = col;
+  // tail
+  q.beginPath(); q.moveTo(-r * 1.0, 0); q.lineTo(-r * 1.65, -r * 0.45 + flap); q.lineTo(-r * 1.65, r * 0.45 + flap); q.closePath(); q.fill();
+  // body by species
+  if (sp.id === 'shark') {
+    q.beginPath(); q.ellipse(0, 0, r * 1.45, r * 0.62, 0, 0, 7); q.fill();
+    q.beginPath(); q.moveTo(-r * .15, -r * .5); q.lineTo(r * .25, -r * 1.15); q.lineTo(r * .5, -r * .45); q.closePath(); q.fill(); // dorsal
+    q.shadowBlur = 0; q.fillStyle = 'rgba(255,255,255,.35)';
+    q.beginPath(); q.ellipse(r * .1, r * .22, r * 1.1, r * .3, 0, 0, 7); q.fill(); // belly
+  } else if (sp.id === 'ray') {
+    q.beginPath(); q.moveTo(r * 1.2, 0); q.quadraticCurveTo(0, -r * 1.15, -r * .9, 0); q.quadraticCurveTo(0, r * 1.15, r * 1.2, 0); q.fill(); // wings
+    q.fillRect(-r * 1.7, -1.5, r * .9, 3); // whip tail
+  } else if (sp.id === 'turtle') {
+    q.beginPath(); q.ellipse(0, 0, r * 1.05, r * 0.85, 0, 0, 7); q.fill();
+    q.shadowBlur = 0; q.strokeStyle = 'rgba(0,0,0,.25)'; q.lineWidth = 1.5;
+    for (let i = -1; i <= 1; i++) { q.beginPath(); q.arc(i * r * .45, 0, r * .3, 0, 7); q.stroke(); }
+    q.fillStyle = col; q.beginPath(); q.arc(r * 1.15, 0, r * .3, 0, 7); q.fill(); // head
+  } else if (sp.id === 'puffer') {
+    q.beginPath(); q.arc(0, 0, r * .95, 0, 7); q.fill();
+    q.shadowBlur = 0; q.strokeStyle = col; q.lineWidth = 2;
+    for (let i = 0; i < 10; i++) { const a = i / 10 * Math.PI * 2;
+      q.beginPath(); q.moveTo(Math.cos(a) * r * .95, Math.sin(a) * r * .95);
+      q.lineTo(Math.cos(a) * r * 1.25, Math.sin(a) * r * 1.25); q.stroke(); }
+  } else if (sp.kind === 'crab') {
+    q.beginPath(); q.arc(0, 0, r * .85, 0, 7); q.fill();
+    q.beginPath(); q.arc(r * .85, -r * .55, r * .38, 0, 7); q.fill();
+    q.beginPath(); q.arc(r * .85, r * .55, r * .38, 0, 7); q.fill(); // claws
+    q.shadowBlur = 0; q.strokeStyle = col; q.lineWidth = 2.5;
+    for (const s of [-1, 1]) for (let i = 0; i < 3; i++) {
+      q.beginPath(); q.moveTo(-r * .2 + i * r * .3, s * r * .8); q.lineTo(-r * .35 + i * r * .3, s * r * 1.15); q.stroke(); }
+  } else if (sp.kind === 'boss') {
+    q.beginPath(); q.ellipse(0, 0, r * 1.3, r * 0.75, 0, 0, 7); q.fill();
+    q.beginPath(); q.moveTo(r * .45, -r * .55) ; q.lineTo(r * .7, -r * 1.2); q.lineTo(r * .95, -r * .5); q.closePath(); q.fill(); // horn
+    q.beginPath(); q.moveTo(r * .0, -r * .6); q.lineTo(r * .2, -r * 1.05); q.lineTo(r * .45, -r * .55); q.closePath(); q.fill();
+    q.shadowBlur = 0; q.strokeStyle = 'rgba(255,255,255,.5)'; q.lineWidth = 2;
+    q.beginPath(); q.moveTo(r * 1.25, r * .1); q.quadraticCurveTo(r * 1.7, r * .3, r * 1.85, r * .05); q.stroke(); // whisker
+  } else {
+    // standard fish; angelfish taller, lionfish striped, clown striped
+    const ry = sp.id === 'angelfish' ? r * 1.0 : r * 0.8;
+    q.beginPath(); q.ellipse(0, 0, r * 1.2, ry, 0, 0, 7); q.fill();
+    q.shadowBlur = 0;
+    if (sp.id === 'clownfish' || sp.id === 'goldclown') {
+      q.fillStyle = 'rgba(255,255,255,.8)';
+      q.fillRect(-r * .15, -ry, r * .25, ry * 2); q.fillRect(r * .5, -ry * .8, r * .2, ry * 1.6);
+    }
+    if (sp.id === 'lionfish') {
+      q.strokeStyle = 'rgba(120,20,20,.6)'; q.lineWidth = 2;
+      for (let i = -2; i <= 2; i++) { q.beginPath(); q.moveTo(i * r * .35, -ry); q.lineTo(i * r * .35 - r * .2, ry); q.stroke(); }
+    }
+    q.fillStyle = col; q.globalAlpha = .55;
+    q.beginPath(); q.ellipse(-r * .05, ry * .35, r * .38, ry * .25, .5, 0, 7); q.fill(); q.globalAlpha = 1;
+  }
+  // eye
+  q.shadowBlur = 0; q.fillStyle = '#071021';
+  q.beginPath(); q.arc(r * 0.68, -r * 0.18, Math.max(1.6, r * 0.1), 0, 7); q.fill();
+  q.fillStyle = 'rgba(255,255,255,.9)';
+  q.beginPath(); q.arc(r * 0.70, -r * 0.21, Math.max(.7, r * 0.04), 0, 7); q.fill();
+}
+bakeAll();
+
+// ---------- cached background & vignette ----------
+const BG = document.createElement('canvas'); BG.width = GW; BG.height = GH;
+{
+  const q = BG.getContext('2d');
+  const grad = q.createLinearGradient(0, 0, 0, GH);
+  grad.addColorStop(0, '#0a1a36'); grad.addColorStop(1, '#05101f');
+  q.fillStyle = grad; q.fillRect(0, 0, GW, GH);
+  // light shafts
+  q.globalAlpha = 0.05; q.fillStyle = '#9fd0ff';
+  for (let i = 0; i < 5; i++) {
+    const x = 120 + i * 250;
+    q.beginPath(); q.moveTo(x, 0); q.lineTo(x + 120, 0); q.lineTo(x - 60, GH); q.lineTo(x - 180, GH); q.closePath(); q.fill();
+  }
+  // vignette
+  q.globalAlpha = 1;
+  const v = q.createRadialGradient(GW / 2, GH / 2, GH * .55, GW / 2, GH / 2, GW * .62);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,.45)');
+  q.fillStyle = v; q.fillRect(0, 0, GW, GH);
+}
+
+// ---------- paths (mechanics.md formulas) ----------
+function borderPoint() {
+  const side = Math.floor(Math.random() * 3);
+  if (side === 0) return { x: 60 + Math.random() * (GW - 120), y: -40 };
+  if (side === 1) return { x: -40, y: 30 + Math.random() * (GH * 0.7) };
+  return { x: GW + 40, y: 30 + Math.random() * (GH * 0.7) };
+}
+function newPath(from, sp) {
+  const S = from || borderPoint();
+  let E = borderPoint();
+  if (Math.abs(E.x - S.x) + Math.abs(E.y - S.y) < 300) E = { x: GW - S.x, y: Math.random() * GH * 0.7 };
+  const mid = { x: (S.x + E.x) / 2, y: (S.y + E.y) / 2 };
+  const dx = E.x - S.x, dy = E.y - S.y, len = Math.hypot(dx, dy) || 1;
+  const curve = (Math.random() < 0.5 ? -1 : 1) * (90 + Math.random() * 130);
+  const C = { x: mid.x + (-dy / len) * curve, y: mid.y + (dx / len) * curve };
+  const dur = (8000 + Math.random() * 3000) / (SPEED[sp?.id] ?? .45);
+  return { S, C, E, t: 0, dur: Math.min(Math.max(dur, 7000), 42000) };
+}
+function bez(P, t) {
+  const u = 1 - t;
+  return { x: u * u * P.S.x + 2 * u * t * P.C.x + t * t * P.E.x,
+           y: u * u * P.S.y + 2 * u * t * P.C.y + t * t * P.E.y };
+}
+function bezD(P, t) {
+  const u = 1 - t;
+  return { x: 2 * (u * (P.C.x - P.S.x) + t * (P.E.x - P.C.x)),
+           y: 2 * (u * (P.C.y - P.S.y) + t * (P.E.y - P.C.y)) };
+}
+
 function syncView() {
   const live = new Set(sim.fish.map(f => f.uid));
   for (const [uid, v] of view) if (!live.has(uid)) {
     dying.push({ ...v, alpha: 1 });
     view.delete(uid);
+    if (lockUid === uid) lockUid = null;
   }
-  // group newcomers by species → formations, like the original's pattern spawners
   const fresh = sim.fish.filter(f => !view.has(f.uid));
   if (!fresh.length) return;
   const bySp = {};
@@ -319,24 +435,21 @@ function syncView() {
   for (const group of Object.values(bySp)) {
     const sp = group[0].sp;
     if (sp.kind === 'boss') {
-      // boss entrance: slow descent from top-center + announcement + shake (the original's 5s-delay + 6s title + shake 6)
       for (const f of group) {
-        const P = { S: { x: GW / 2, y: -100 }, C: { x: GW / 2 + 180, y: 40 }, E: { x: GW / 2, y: 120 }, t: 0, dur: 9000 };
+        const P = { S: { x: GW / 2, y: -100 }, C: { x: GW / 2 + 180, y: 40 }, E: { x: GW / 2, y: 130 }, t: 0, dur: 9000 };
         view.set(f.uid, { ...P, f, theater: 1, mode: 'bez', wig: Math.random() * 7 });
       }
-      banner = { txt: '👑 BOSS INCOMING', until: performance.now() + 2600 };
+      banner = { txt: '👑 BOSS INCOMING — MAP ' + mapIdx, until: performance.now() + 2600 };
       shake = Math.max(shake, 1);
       continue;
     }
     const inBonus = sim.stage().name === 'BONUS';
     if (group.length >= 3 && sp.kind === 'normal' && inBonus && Math.random() < .5) {
-      // CIRCLE formation (the original's bonus-stage pattern): orbit a drifting center
       const cP = newPath(null, sp); cP.dur *= 1.6;
       const R = 60 + Math.random() * 40;
       group.forEach((f, i) => view.set(f.uid, { f, theater: 1, mode: 'circle', cP, R,
         a0: i / group.length * Math.PI * 2, revs: 2 + Math.random() * 1.5, t: 0, wig: Math.random() * 7 }));
     } else if (group.length >= 3 && sp.kind === 'normal' && Math.random() < .65) {
-      // TRAIN (the original's wave pattern): shared path, staggered starts, slight lateral spread
       const P = newPath(null, sp);
       group.forEach((f, i) => view.set(f.uid, { ...P, f, theater: 1, mode: 'bez',
         t: -i * 0.055, lat: (i % 2 ? 1 : -1) * (6 + i * 3), wig: Math.random() * 7 }));
@@ -347,7 +460,9 @@ function syncView() {
 }
 
 function burst(x, y, col) {
-  for (let i = 0; i < 10; i++) {
+  const n = fps < 45 ? 5 : 10;                       // adaptive
+  if (parts.length > MAX_PARTS) return;
+  for (let i = 0; i < n; i++) {
     const a = Math.random() * Math.PI * 2, v = 1 + Math.random() * 3;
     parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1, col });
   }
@@ -360,11 +475,14 @@ function spawnCoins(x, y, mult) {
 }
 function zap(a, b) { arcs.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, a: 1 }); }
 
-function fireBullet() {
-  sim.wagerShot();                       // debit happens at fire time, like a real server round
-  bullets.push({ x: CANNON.x, y: CANNON.y - 18,
-    vx: Math.cos(CANNON.angle) * 10, vy: Math.sin(CANNON.angle) * 10,
-    bet: sim.bet, bounces: 0 });
+function fireBullet(angle) {
+  if (bullets.length >= MAX_BULLETS) return;
+  sim.wagerShot();
+  const a = angle ?? CANNON.angle;
+  bullets.push({ x: CANNON.x + Math.cos(a) * 22, y: CANNON.y + Math.sin(a) * 22, px: CANNON.x, py: CANNON.y,
+    vx: Math.cos(a) * 10, vy: Math.sin(a) * 10, bet: sim.bet, bounces: 0,
+    homing: aimLockOn });
+  CANNON.recoil = 1; CANNON.flash = 1;
 }
 
 gc.addEventListener('pointermove', e => {
@@ -375,27 +493,53 @@ gc.addEventListener('pointermove', e => {
 gc.addEventListener('pointerdown', () => { firing = true; });
 window.addEventListener('pointerup', () => { firing = false; });
 
+$('aimLock').onclick = function () {
+  aimLockOn = !aimLockOn; this.classList.toggle('on', aimLockOn);
+  if (!aimLockOn) lockUid = null;
+};
+$('stress').onclick = () => {                       // performance proof: 300 bullets in a fan
+  for (let i = 0; i < 300; i++) fireBullet(-Math.PI * (0.08 + 0.84 * (i / 299)));
+  render();
+};
+
+function pickLockTarget() {                          // original auto-aim: lock the juiciest fish
+  let best = null, bestM = -1;
+  for (const [uid, v] of view) {
+    if (v.t < 0) continue;
+    const m = v.f.sp.kind === 'boss' ? 999 : v.f.sp.kind === 'normal' ? v.f.sp.M : 50;
+    if (m > bestM) { bestM = m; best = uid; }
+  }
+  return best;
+}
+
+let lastNow = performance.now();
 function tick(now) {
+  const dt = Math.min(now - lastNow, 50); lastNow = now;
+  const k = dt / 16.667;                              // delta-time factor
+
+  frames++;
+  if (now - fpsAt > 500) { fps = frames * 1000 / (now - fpsAt); frames = 0; fpsAt = now; }
+
   syncView();
 
-  // stage banner (the original shows a 6s title; we show 2.2s)
   if (sim.stage().name !== lastStage) {
     lastStage = sim.stage().name;
+    if (lastStage === 'NORMAL') mapIdx = mapIdx % 3 + 1;  // map rotation like the original
     banner = { txt: lastStage + ' STAGE', until: now + 2200 };
   }
 
-  // fish movement: eased Bezier with tangent orientation, or circle formation
+  // fish movement
   for (const v of view.values()) {
     if (v.mode === 'circle') {
-      v.t += 16 / v.cP.dur;
+      v.t += dt / v.cP.dur;
       if (v.t >= 1) { Object.assign(v, { ...newPath({ x: v.x, y: v.y }, v.f.sp), mode: 'bez' }); continue; }
       const c = bez(v.cP, smooth(Math.min(v.t, 1)));
       const a = v.a0 + v.t * Math.PI * 2 * v.revs;
       const nx = c.x + Math.cos(a) * v.R, ny = c.y + Math.sin(a) * v.R;
-      v.dir = Math.atan2(ny - (v.y ?? ny), nx - (v.x ?? nx) || 0.001);
+      v.dir = Math.atan2(ny - (v.y ?? ny), (nx - (v.x ?? nx)) || 0.001);
       v.x = nx; v.y = ny;
     } else {
-      v.t += 16 / v.dur;
+      v.t += dt / v.dur;
       if (v.t >= 1) Object.assign(v, newPath({ x: v.x, y: v.y }, v.f.sp));
       const tt = smooth(Math.max(Math.min(v.t, 1), 0));
       const p = bez(v, tt), d = bezD(v, tt);
@@ -407,7 +551,10 @@ function tick(now) {
     }
   }
 
-  // boss death cinematic: multiplier count-up waves (the original's 1x→5x sprites, now REAL)
+  // aim-lock targeting
+  if (aimLockOn && (lockUid == null || !view.has(lockUid))) lockUid = pickLockTarget();
+
+  // boss death cinematic
   if (cine && now >= cine.nextAt) {
     cine.wave++;
     pops.push({ x: cine.x, y: cine.y - 20, txt: cine.wave + 'x', col: '#fbbf24', a: 1.7, big: true });
@@ -420,21 +567,32 @@ function tick(now) {
     } else cine.nextAt = now + 800;
   }
 
-  // hold-to-fire
   if (firing && now - lastFire > 170) { lastFire = now; fireBullet(); }
 
-  // bullets: move, bounce, contact
-  bullets = bullets.filter(b => {
-    b.x += b.vx; b.y += b.vy;
-    if (b.x < 4 || b.x > GW - 4) { b.vx *= -1; b.bounces++; }
-    if (b.y < 4 || b.y > GH - 4) { b.vy *= -1; b.bounces++; }
-    // bounce-until-hit (the original's design): P(contact)=1 so delivered RTP = target.
-    // Safety net: a bullet that somehow never finds a fish is VOIDED with a refund,
-    // not eaten as a whiff — expiry-as-loss would silently tax the RTP.
+  // bullets — in-place compaction, homing steer, bounce-until-hit
+  compact(bullets, b => {
+    b.px = b.x; b.py = b.y;
+    if (b.homing && lockUid != null) {
+      const tv = view.get(lockUid);
+      if (tv) {                                       // original MoveBulletTowardTarget: steer toward target
+        const ta = Math.atan2(tv.y - b.y, tv.x - b.x);
+        const ca = Math.atan2(b.vy, b.vx);
+        let da = ta - ca; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+        const na = ca + Math.max(-0.12 * k, Math.min(0.12 * k, da));
+        b.vx = Math.cos(na) * 10; b.vy = Math.sin(na) * 10;
+      }
+    }
+    b.x += b.vx * k; b.y += b.vy * k;
+    if (b.x < 4) { b.x = 4; b.vx = Math.abs(b.vx); b.bounces++; }
+    if (b.x > GW - 4) { b.x = GW - 4; b.vx = -Math.abs(b.vx); b.bounces++; }
+    if (b.y < 4) { b.y = 4; b.vy = Math.abs(b.vy); b.bounces++; }
+    if (b.y > GH - 4) { b.y = GH - 4; b.vy = -Math.abs(b.vy); b.bounces++; }
     if (b.bounces > 40) { sim.refundShot(b.bet); pops.push({ x: b.x, y: b.y, txt: 'REFUND', col: '#60a5fa', a: 1 }); return false; }
     for (const [uid, v] of view) {
-      if (v.t < 0) continue; // train members still queued offscreen
-      if (Math.hypot(b.x - v.x, b.y - v.y) < fishRadius(v.f) + 5) {
+      if (v.t < 0) continue;
+      const r = fishRadius(v.f) + 5;
+      if (Math.abs(b.x - v.x) > r || Math.abs(b.y - v.y) > r) continue;   // cheap reject
+      if (Math.hypot(b.x - v.x, b.y - v.y) < r) {
         nets.push({ x: b.x, y: b.y, r: 6, a: 1 });
         const e = sim.resolveContact(uid, b.bet);
         if (e.result === 'KILL') {
@@ -456,7 +614,7 @@ function tick(now) {
             spawnCoins(v.x, v.y, v.f.sp.M);
           }
         } else {
-          v.theater = Math.max(0.06, v.theater - (0.15 + Math.random() * 0.3)); // HP THEATER only
+          v.theater = Math.max(0.06, v.theater - (0.15 + Math.random() * 0.3));
           pops.push({ x: v.x, y: v.y - fishRadius(v.f) - 6, txt: 'p=' + (e.p * 100).toFixed(1) + '% ✗', col: '#7e8db0', a: 0.9 });
         }
         return false;
@@ -465,94 +623,97 @@ function tick(now) {
     return true;
   });
 
-  draw(now);
+  draw(now, k);
   requestAnimationFrame(tick);
 }
 
-function draw(now) {
-  // water background
-  const grad = g.createLinearGradient(0, 0, 0, GH);
-  grad.addColorStop(0, '#0a1a36'); grad.addColorStop(1, '#05101f');
-  g.fillStyle = grad; g.fillRect(0, 0, GW, GH);
+function draw(now, k) {
+  g.drawImage(BG, 0, 0);                              // cached gradient + shafts + vignette
 
   g.save();
-  if (shake > 0.01) { g.translate((Math.random() - .5) * shake * 14, (Math.random() - .5) * shake * 14); shake *= .9; } else shake = 0;
+  if (shake > 0.01) { g.translate((Math.random() - .5) * shake * 14, (Math.random() - .5) * shake * 14); shake *= Math.pow(.9, k); } else shake = 0;
 
-  // bubbles
   g.fillStyle = 'rgba(140,180,230,0.18)';
   for (const bu of bubbles) {
-    bu.y -= bu.s; if (bu.y < -4) { bu.y = GH + 4; bu.x = Math.random() * GW; }
+    bu.y -= bu.s * k; if (bu.y < -4) { bu.y = GH + 4; bu.x = Math.random() * GW; }
     g.beginPath(); g.arc(bu.x, bu.y, bu.r, 0, 7); g.fill();
   }
 
-  if (flash > 0) { g.fillStyle = `rgba(251,191,36,${flash * 0.25})`; g.fillRect(-20, -20, GW + 40, GH + 40); flash -= 0.05; }
+  if (flash > 0) { g.fillStyle = `rgba(251,191,36,${flash * 0.25})`; g.fillRect(-20, -20, GW + 40, GH + 40); flash -= 0.05 * k; }
 
-  // dying fish fade + sink
-  dying = dying.filter(d => {
-    d.alpha -= 0.05; if (d.alpha <= 0) return false;
-    d.y += 0.8; d.dir = (d.dir || 0) + 0.04; // belly-up drift
-    g.globalAlpha = d.alpha;
-    drawFish(d, d.f); g.globalAlpha = 1; return true;
+  compact(dying, d => {
+    d.alpha -= 0.05 * k; if (d.alpha <= 0) return false;
+    d.y += 0.8 * k; d.dir = (d.dir || 0) + 0.04 * k;
+    g.globalAlpha = d.alpha; drawFishSprite(d); g.globalAlpha = 1; return true;
   });
 
-  for (const v of view.values()) if (v.t >= 0) drawFish(v, v.f);
+  for (const v of view.values()) if (v.t >= 0) drawFishSprite(v);
 
-  // chain lightning
-  arcs = arcs.filter(z => {
-    z.a -= 0.06; if (z.a <= 0) return false;
+  // aim-lock dotted line + reticle (the original's lock UI)
+  if (aimLockOn && lockUid != null) {
+    const tv = view.get(lockUid);
+    if (tv) {
+      g.setLineDash([4, 7]); g.strokeStyle = 'rgba(251,191,36,.6)'; g.lineWidth = 1.5;
+      g.beginPath(); g.moveTo(CANNON.x, CANNON.y - 16); g.lineTo(tv.x, tv.y); g.stroke(); g.setLineDash([]);
+      const rr = fishRadius(tv.f) + 8 + Math.sin(now / 150) * 3;
+      g.strokeStyle = '#fbbf24'; g.beginPath(); g.arc(tv.x, tv.y, rr, 0, 7); g.stroke();
+    }
+  }
+
+  compact(arcs, z => {
+    z.a -= 0.06 * k; if (z.a <= 0) return false;
     g.strokeStyle = `rgba(251,191,36,${z.a})`; g.lineWidth = 2;
     g.beginPath(); g.moveTo(z.x1, z.y1);
-    const mx = (z.x1 + z.x2) / 2 + (Math.random() - .5) * 30, my = (z.y1 + z.y2) / 2 + (Math.random() - .5) * 30;
-    g.lineTo(mx, my); g.lineTo(z.x2, z.y2); g.stroke(); return true;
+    g.lineTo((z.x1 + z.x2) / 2 + (Math.random() - .5) * 30, (z.y1 + z.y2) / 2 + (Math.random() - .5) * 30);
+    g.lineTo(z.x2, z.y2); g.stroke(); return true;
   });
 
-  // nets (the 0.7s visual from the original)
-  nets = nets.filter(n => { n.r += 3.5; n.a -= 0.05; if (n.a <= 0) return false;
-    g.strokeStyle = `rgba(96,165,250,${n.a})`; g.lineWidth = 2;
+  // nets: ring + cross-hatch like the original FishNet
+  compact(nets, n => {
+    n.r += 3.5 * k; n.a -= 0.05 * k; if (n.a <= 0) return false;
+    g.strokeStyle = `rgba(96,165,250,${n.a})`; g.lineWidth = 1.5;
     g.beginPath(); g.arc(n.x, n.y, n.r, 0, 7); g.stroke();
-    g.beginPath(); g.arc(n.x, n.y, n.r * 0.6, 0, 7); g.stroke(); return true; });
+    g.beginPath(); g.moveTo(n.x - n.r, n.y); g.lineTo(n.x + n.r, n.y);
+    g.moveTo(n.x, n.y - n.r); g.lineTo(n.x, n.y + n.r); g.stroke(); return true;
+  });
 
-  // particles
-  parts = parts.filter(p => {
-    p.life -= 0.03; if (p.life <= 0) return false;
-    p.x += p.vx; p.y += p.vy; p.vy += 0.05;
+  compact(parts, p => {
+    p.life -= 0.03 * k; if (p.life <= 0) return false;
+    p.x += p.vx * k; p.y += p.vy * k; p.vy += 0.05 * k;
     g.globalAlpha = p.life; g.fillStyle = p.col;
-    g.beginPath(); g.arc(p.x, p.y, 2.5, 0, 7); g.fill(); g.globalAlpha = 1; return true;
+    g.fillRect(p.x - 2, p.y - 2, 4, 4); g.globalAlpha = 1; return true;   // rects beat arcs
   });
 
-  // coins fly to the cannon (the original's coin shower → balance counter)
-  coins = coins.filter(cn => {
+  compact(coins, cn => {
     if (now < cn.delay) { drawCoin(cn.x, cn.y); return true; }
-    cn.t += 16 / 650; if (cn.t >= 1) return false;
+    cn.t += (16 / 650) * k; if (cn.t >= 1) return false;
     const e = smooth(cn.t);
-    const x = cn.x + (CANNON.x - cn.x) * e, y = cn.y + (CANNON.y - 24 - cn.y) * e - Math.sin(cn.t * Math.PI) * 40;
-    drawCoin(x, y); return true;
+    drawCoin(cn.x + (CANNON.x - cn.x) * e, cn.y + (CANNON.y - 24 - cn.y) * e - Math.sin(cn.t * Math.PI) * 40);
+    return true;
   });
 
-  // bullets
+  // bullets: trail line + dot, batched in two passes
+  g.strokeStyle = 'rgba(251,191,36,.35)'; g.lineWidth = 2; g.beginPath();
+  for (const b of bullets) { g.moveTo(b.px, b.py); g.lineTo(b.x, b.y); }
+  g.stroke();
   g.fillStyle = '#fbbf24';
-  for (const b of bullets) { g.beginPath(); g.arc(b.x, b.y, 4, 0, 7); g.fill(); }
+  for (const b of bullets) g.fillRect(b.x - 3, b.y - 3, 6, 6);
 
-  // payout popups
-  pops = pops.filter(p => { p.y -= 0.7; p.a -= 0.018; if (p.a <= 0) return false;
+  compact(pops, p => {
+    p.y -= 0.7 * k; p.a -= 0.018 * k; if (p.a <= 0) return false;
     g.globalAlpha = Math.min(1, p.a); g.fillStyle = p.col;
-    g.font = p.big ? 'bold 30px monospace' : p.txt.startsWith('+') ? 'bold 16px monospace' : '11px monospace';
-    g.textAlign = 'center'; g.fillText(p.txt, p.x, p.y); g.globalAlpha = 1; return true; });
+    g.font = p.big ? 'bold 30px monospace' : p.txt[0] === '+' ? 'bold 16px monospace' : '11px monospace';
+    g.textAlign = 'center'; g.fillText(p.txt, p.x, p.y); g.globalAlpha = 1; return true;
+  });
 
-  // cannon
-  g.save(); g.translate(CANNON.x, CANNON.y); g.rotate(CANNON.angle);
-  g.fillStyle = '#60a5fa'; g.fillRect(0, -5, 34, 10);
+  drawCannon(now, k);
   g.restore();
-  g.fillStyle = '#1c2a4f'; g.beginPath(); g.arc(CANNON.x, CANNON.y, 14, 0, 7); g.fill();
-  g.strokeStyle = '#60a5fa'; g.stroke();
-  g.fillStyle = '#cdd7ee'; g.font = '11px monospace'; g.textAlign = 'center';
-  g.fillText('bet ' + sim.bet, CANNON.x, CANNON.y - 22);
 
-  g.restore(); // end shake
-
-  // stage tag + banner (drawn unshaken)
+  // HUD (unshaken): stage/map + performance counters
   g.fillStyle = '#fbbf24'; g.font = 'bold 13px monospace'; g.textAlign = 'left';
-  g.fillText(sim.stage().name + ' stage', 10, 18);
+  g.fillText(sim.stage().name + ' stage · map ' + mapIdx, 10, 18);
+  g.fillStyle = fps < 45 ? '#f87171' : '#7e8db0'; g.font = '11px monospace'; g.textAlign = 'right';
+  g.fillText(fps.toFixed(0) + ' fps · ' + bullets.length + ' bullets · ' + view.size + ' fish · ' + parts.length + ' fx', GW - 10, 16);
   if (banner && now < banner.until) {
     const a = Math.min(1, (banner.until - now) / 600);
     g.globalAlpha = a; g.fillStyle = '#fbbf24'; g.font = 'bold 34px monospace'; g.textAlign = 'center';
@@ -560,34 +721,47 @@ function draw(now) {
   }
 }
 
+function drawCannon(now, k) {
+  const lvl = sim.bet < 300 ? 1 : sim.bet < 500 ? 2 : 3;        // the original's SetCannonLevel tiers
+  const colors = { 1: '#60a5fa', 2: '#a78bfa', 3: '#fbbf24' };
+  const len = 28 + lvl * 5, wid = 7 + lvl * 2;
+  CANNON.recoil = Math.max(0, CANNON.recoil - 0.12 * k);
+  CANNON.flash = Math.max(0, CANNON.flash - 0.18 * k);
+  const off = -CANNON.recoil * 6;
+  g.save(); g.translate(CANNON.x, CANNON.y); g.rotate(CANNON.angle);
+  if (CANNON.flash > 0) {                                        // muzzle flash
+    g.globalAlpha = CANNON.flash; g.fillStyle = '#fff7d6';
+    g.beginPath(); g.arc(len + 6, 0, 7 + CANNON.flash * 6, 0, 7); g.fill(); g.globalAlpha = 1;
+  }
+  g.fillStyle = colors[lvl];
+  g.fillRect(off, -wid / 2, len, wid);
+  if (lvl === 3) { g.fillRect(off, -wid / 2 - 4, len * .8, 3); g.fillRect(off, wid / 2 + 1, len * .8, 3); } // Lv3 triple barrel
+  g.restore();
+  g.fillStyle = '#1c2a4f'; g.beginPath(); g.arc(CANNON.x, CANNON.y, 13 + lvl, 0, 7); g.fill();
+  g.strokeStyle = colors[lvl]; g.lineWidth = 2; g.stroke();
+  g.fillStyle = '#cdd7ee'; g.font = '11px monospace'; g.textAlign = 'center';
+  g.fillText('bet ' + sim.bet + ' · Lv' + lvl, CANNON.x, CANNON.y - 24 - lvl);
+}
+
 function drawCoin(x, y) {
   g.fillStyle = '#fbbf24'; g.beginPath(); g.arc(x, y, 5, 0, 7); g.fill();
   g.fillStyle = '#fde68a'; g.beginPath(); g.arc(x - 1.5, y - 1.5, 1.8, 0, 7); g.fill();
 }
 
-function drawFish(v, f) {
-  const r = fishRadius(f);
+function drawFishSprite(v) {
+  const f = v.f, spr = SPRITES[f.sp.id];
   const ang = v.dir ?? 0;
   const wob = Math.sin(performance.now() / 1000 * 4 + (v.wig || 0)) * 0.07;
+  const frame = spr.frames[((performance.now() / 130 + (v.wig || 0) * 9) | 0) % 4];
   g.save(); g.translate(v.x, v.y); g.rotate(ang + wob);
-  if (Math.cos(ang) < 0) g.scale(1, -1);   // keep the belly down when swimming left
-  const flap = Math.sin(performance.now() / 90 + (v.wig || 0)) * r * 0.22;
-  g.fillStyle = fishColor(f);
-  // tail (flapping)
-  g.beginPath(); g.moveTo(-r * 1.05, 0); g.lineTo(-r * 1.7, -r * 0.45 + flap); g.lineTo(-r * 1.7, r * 0.45 + flap); g.closePath(); g.fill();
-  // body
-  g.beginPath(); g.ellipse(0, 0, r * 1.2, r * 0.8, 0, 0, 7); g.fill();
-  // fin
-  g.globalAlpha = .55; g.beginPath(); g.ellipse(-r * 0.05, r * 0.3, r * 0.38, r * 0.2, .5, 0, 7); g.fill(); g.globalAlpha = 1;
-  // eye
-  g.fillStyle = '#071021'; g.beginPath(); g.arc(r * 0.68, -r * 0.18, Math.max(1.6, r * 0.1), 0, 7); g.fill();
+  if (Math.cos(ang) < 0) g.scale(1, -1);
+  g.drawImage(frame, -spr.ax, -spr.ay, spr.w, spr.h);
   g.restore();
-  // label (horizontal, outlined for contrast): the multiplier IS the fish
+  const r = fishRadius(f);
   const tag = f.sp.kind === 'chain' ? '⚡' + f.sp.M : f.sp.kind === 'crab' ? '🔨' : f.sp.kind === 'boss' ? '👑200' : f.sp.M + 'x';
   g.font = `bold ${Math.max(11, r * 0.5)}px monospace`; g.textAlign = 'center';
   g.lineWidth = 3; g.strokeStyle = '#071021'; g.strokeText(tag, v.x, v.y + 4);
   g.fillStyle = '#fff'; g.fillText(tag, v.x, v.y + 4);
-  // HP theater bar
   if (v.theater !== undefined && f.sp.kind !== 'crab') {
     g.fillStyle = '#1a2440'; g.fillRect(v.x - r, v.y - r - 11, r * 2, 4);
     g.fillStyle = v.theater > 0.4 ? '#4ade80' : '#f87171';
