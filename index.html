@@ -466,17 +466,59 @@ function tone(f0, f1, dur, type, vol, when = 0) {
     o.connect(gn); gn.connect(a.destination); o.start(t); o.stop(t + dur + .02);
   } catch (e) {}
 }
+// --- original game samples (Assets/Audios/): shotgun-blast cannon, coin
+// shower, laser (chain zap), casino bonus jingle. Loaded async; every SFX
+// falls back to the synth if a sample is missing (e.g. file:// or offline).
+// audio/bgm.mp3 is loaded+looped if present (excluded from the repo: the
+// original's track had unverifiable licensing — drop in your own).
+const SAMPLES = {};
+const SAMPLE_SRC = { shot: 'audio/shot.mp3', coins: 'audio/coins.mp3', laser: 'audio/laser.mp3', bigwin: 'audio/bigwin.mp3', bgm: 'audio/bgm.mp3' };
+let bgmNode = null;
+function loadSamples() {
+  const a = ac(); if (!a) return;
+  for (const [k, url] of Object.entries(SAMPLE_SRC)) {
+    fetch(url).then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); })
+      .then(buf => a.decodeAudioData(buf))
+      .then(b => { SAMPLES[k] = b; })
+      .catch(() => {});
+  }
+}
+function playSample(name, vol = .5, rate = 1) {
+  const a = ac(), buf = SAMPLES[name];
+  if (!a || a.state !== 'running' || muted || !buf) return false;
+  try {
+    const src = a.createBufferSource(), gn = a.createGain();
+    src.buffer = buf; src.playbackRate.value = rate;
+    gn.gain.value = vol;
+    src.connect(gn); gn.connect(a.destination); src.start();
+  } catch (e) { return false; }
+  return true;
+}
+function startBgm() {
+  const a = ac();
+  if (bgmNode || muted || !SAMPLES.bgm || !a || a.state !== 'running') return;
+  try {
+    bgmNode = a.createBufferSource(); const gn = a.createGain();
+    bgmNode.buffer = SAMPLES.bgm; bgmNode.loop = true; gn.gain.value = .16;
+    bgmNode.connect(gn); gn.connect(a.destination); bgmNode.start();
+  } catch (e) { bgmNode = null; }
+}
+function stopBgm() { if (bgmNode) { try { bgmNode.stop(); } catch (e) {} bgmNode = null; } }
+loadSamples();
 const SFX = {
-  shoot:  () => tone(640, 290, .06, 'square', .018),
+  shoot:  () => { playSample('shot', .22, .95 + Math.random() * .1) || tone(640, 290, .06, 'square', .018); },
   hit:    () => tone(190, 120, .05, 'triangle', .035),
-  kill:   () => { tone(660, 660, .07, 'sine', .05); tone(990, 990, .12, 'sine', .04, .07); },
-  chain:  () => [440, 587, 740, 880].forEach((f, i) => tone(f, f, .09, 'sine', .045, i * .06)),
-  big:    () => [523, 659, 784, 1047, 1319].forEach((f, i) => tone(f, f, .14, 'sine', .05, i * .09)),
+  kill:   () => { playSample('coins', .5, .95 + Math.random() * .1) || (tone(660, 660, .07, 'sine', .05), tone(990, 990, .12, 'sine', .04, .07)); },
+  chain:  () => { playSample('laser', .45); playSample('coins', .5, .9) || [440, 587, 740, 880].forEach((f, i) => tone(f, f, .09, 'sine', .045, i * .06)); },
+  big:    () => { playSample('bigwin', .55) || [523, 659, 784, 1047, 1319].forEach((f, i) => tone(f, f, .14, 'sine', .05, i * .09)); },
   boss:   () => tone(95, 42, .55, 'sawtooth', .07),
   wave:   () => tone(330, 520, .1, 'square', .04),
   refund: () => tone(420, 420, .07, 'sine', .025),
 };
-$('mute').onclick = function () { muted = !muted; this.textContent = muted ? '🔇 muted' : '🔊 sound'; };
+$('mute').onclick = function () {
+  muted = !muted; this.textContent = muted ? '🔇 muted' : '🔊 sound';
+  if (muted) stopBgm(); else startBgm();
+};
 
 const SPEED = { minnow: .55, clownfish: .42, angelfish: .6, puffer: .5, lionfish: .4,
                 turtle: .22, ray: .22, shark: .3, goldclown: .45, powercrab: .6, dragon: .16 };
@@ -878,7 +920,9 @@ function bindInput(el) {
   });
   el.addEventListener('pointerdown', () => {
     firing = true;
-    const a = ac(); if (a && a.state === 'suspended') a.resume();
+    const a = ac();
+    if (a && a.state === 'suspended') a.resume().then(startBgm);
+    else startBgm();
   });
 }
 bindInput(glc);

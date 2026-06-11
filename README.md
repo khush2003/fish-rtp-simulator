@@ -41,3 +41,13 @@ Just open `index.html` in a browser — no build, no dependencies.
 ## Try the features
 
 Force-spawn buttons above the canvas summon the chain school ⚡, hammer crab 🔨, and boss 👑 on demand — shoot them and watch the snapshot prizes in the log. Spawning anything never changes total RTP: every fish self-prices at `p = RTP/M`.
+
+## Audio credits
+
+SFX carried over from the original Unity project (compressed for web):
+- Cannon shot — "A Shotgun Blast" (Pixabay, #165915)
+- Coin shower — dwoboyle, freesound #140382 "coins-01"
+- Chain laser — chipfork71, freesound #72639 "laser01rev"
+- Big-win jingle — "Playful Casino Slot Machine Bonus 3" (Pixabay, #183920)
+
+Background music is intentionally not bundled (the original's track had unverifiable licensing). Drop any licensed loop at `audio/bgm.mp3` and the game will pick it up automatically.
